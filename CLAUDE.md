@@ -12,10 +12,10 @@ stages: **predict** (flat baseline now, GNN later) → **diagnose** (do clearanc
 rates/errors differ by victim race/sex?) → **prescribe** (how much can mitigation
 techniques close that gap, and at what accuracy cost?).
 
-Written docs with the full design rationale (Korean): `문제정의서_CLEAR.md`
-(problem definition), `AI모델_개발계획서_살인사건검거_GNN.md` (dev plan —
-graph/edge design, GNN architecture, 4-week roadmap), `EDA_보고서.md` (EDA
-findings).
+Written docs with the full design rationale (Korean), in `reports/`:
+`문제정의서_CLEAR.md` (problem definition), `AI모델_개발계획서_살인사건검거_GNN.md`
+(dev plan — graph/edge design, GNN architecture, 4-week roadmap),
+`EDA_보고서.md` (EDA findings).
 
 ## Commands
 
