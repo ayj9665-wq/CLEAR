@@ -6,3 +6,8 @@ xgboost>=2.1.4
 matplotlib>=3.7
 seaborn>=0.12
 pyarrow>=14.0
+# 주의: 순정 `pip install -r requirements.txt`는 torch를 CPU 전용 wheel로 설치함.
+# CUDA 빌드가 필요하면 먼저 아래를 실행한 뒤 나머지를 설치할 것:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+torch>=2.6
+torch-geometric>=2.7

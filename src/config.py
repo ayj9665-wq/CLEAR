@@ -28,6 +28,12 @@ os.environ["TEMP"] = str(_JOBLIB_TMP)
 os.environ["TMP"] = str(_JOBLIB_TMP)
 os.environ["JOBLIB_TEMP_FOLDER"] = str(_JOBLIB_TMP)
 
+# ---- OpenMP DLL 충돌 회피 (Windows, torch/torch_geometric) ----
+# libiomp5md.dll 중복 로드로 torch import 시 OMP Error #15 발생.
+# 04_build_graph.py는 torch를 안 써서 미뤘고, 06_train_gnn.py부터 torch를
+# 처음 쓰므로 여기서 처리한다.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 # ---- 타깃 ----
 TARGET = "Crime Solved"          # 원본 열 이름
 TARGET_BIN = "solved"            # 인코딩된 이진 타깃(1=검거, 0=미해결)
@@ -85,3 +91,16 @@ K_NEIGHBORS = 10
 GEO_BLOCK_COLS = ["State", "City"]
 TEMPORAL_BLOCK_COLS = ["Year", "Month"]
 WEAPON_BLOCK_COLS = ["Weapon", "Victim Sex", "Victim Race"]
+
+# ---- GNN 학습 (06_train_gnn.py) 기본 하이퍼파라미터 ----
+# argparse로 개별 오버라이드 가능(ablation study용). 인자 없이 실행하면
+# 이 값들을 그대로 쓴다.
+GNN_HIDDEN_DIM = 64
+GNN_NUM_LAYERS = 2
+GNN_DROPOUT = 0.3
+GNN_LR = 0.01
+GNN_WEIGHT_DECAY = 5e-4
+GNN_AGGR = "mean"
+GNN_MAX_EPOCHS = 200
+GNN_PATIENCE = 20
+GNN_VAL_SIZE = 0.15        # train+val 풀 중 val 비율
