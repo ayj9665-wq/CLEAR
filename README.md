@@ -15,7 +15,7 @@
 ## 파이프라인 (1주차 구현)
 ```
 01_clean.py      데이터 정제(누수 열 제거, 타깃 인코딩)
-02_sample.py     주(州) 단위 표본 추출(기본 California)
+02_sample.py     주(州) 단위 표본 추출(기본 California+Texas+Michigan)
 03_features.py   특성 공학(전면 One-Hot, 나이 5년 구간화)
 eda.py           검거율·인종/성별 격차 사전 확인
 05_train_baseline.py  flat 베이스라인(XGBoost/Logistic) — GNN 비교 기준선
