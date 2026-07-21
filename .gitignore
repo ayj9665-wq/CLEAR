@@ -1,0 +1,18 @@
+# Data (대용량 원본은 커밋하지 않음)
+dataset/*.csv
+data/processed/
+outputs/*.png
+outputs/*.pkl
+outputs/*.joblib
+
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+.joblib_tmp/
+
+# OS
+.DS_Store
+Thumbs.db

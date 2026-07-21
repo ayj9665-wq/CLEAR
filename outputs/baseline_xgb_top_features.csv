@@ -1,0 +1,26 @@
+﻿,importance
+Weapon=Firearm,0.14654301
+Age Group=0-4,0.0718318
+State=Texas,0.05570886
+Weapon=Unknown,0.05284934
+Age Group=95-99,0.047246903
+Weapon=Strangulation,0.040649742
+Weapon=Shotgun,0.03377896
+Age Group=5-9,0.029126275
+Weapon=Handgun,0.027656784
+Weapon=Rifle,0.026745193
+Decade=1980,0.021473823
+Victim Sex=Female,0.019209206
+Weapon=Gun,0.017444473
+Weapon=Knife,0.016631082
+State=California,0.016172623
+Victim Sex=Unknown,0.014341844
+Victim Sex=Male,0.013727965
+Age Group=10-14,0.01325906
+Victim Ethnicity=Hispanic,0.013087652
+Victim Race=White,0.012226028
+Victim Race=Unknown,0.0113567
+Weapon=Fire,0.010893573
+Victim Race=Black,0.0106568355
+Decade=2010,0.010319729
+State=Michigan,0.009773104
