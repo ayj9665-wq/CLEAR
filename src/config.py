@@ -71,3 +71,17 @@ NUMERIC_COLS = ["Victim Count"]   # Perpetrator Count 는 누수라 제외
 RANDOM_STATE = 42
 TEST_SIZE = 0.30           # 논문: 70/30
 CV_FOLDS = 5              # 논문: 5-fold 층화 CV
+
+# ---- 그래프 구성 (04_build_graph.py) ----
+GRAPH_DIR = PROCESSED_DIR / "graph"
+GRAPH_DIR.mkdir(parents=True, exist_ok=True)
+
+# 노드당 신규 이웃 상한(차수 상한). 대칭화 후 실제 차수는 k~2k 사이.
+K_NEIGHBORS = 10
+# 엣지 후보 3종의 블로킹 키. Agency Code/Name은 01_clean.py에서 이미 제거돼
+# City가 가장 세밀한 지리 단위. 같은 블록 안에서는 더 세밀한 유사도 기준이
+# 없으므로, 실제 거리 계산 대신 "정확 일치 블로킹 + 블록 내 k개 결정적 선택"
+# 방식을 3종 모두에 동일하게 적용한다(자세한 근거는 개발계획서·플랜 참고).
+GEO_BLOCK_COLS = ["State", "City"]
+TEMPORAL_BLOCK_COLS = ["Year", "Month"]
+WEAPON_BLOCK_COLS = ["Weapon", "Victim Sex", "Victim Race"]
