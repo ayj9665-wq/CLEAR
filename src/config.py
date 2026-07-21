@@ -95,6 +95,10 @@ WEAPON_BLOCK_COLS = ["Weapon", "Victim Sex", "Victim Race"]
 # ---- GNN 학습 (06_train_gnn.py) 기본 하이퍼파라미터 ----
 # argparse로 개별 오버라이드 가능(ablation study용). 인자 없이 실행하면
 # 이 값들을 그대로 쓴다.
+# geo(State+City 블로킹)가 3종 중 유일하게 베이스라인을 4개 지표 모두에서
+# 이겨서 임시로 기본값 확정. temporal/weapon은 --edge_type으로 여전히 실행
+# 가능 — 데이터가 바뀌면(예: ablation으로 다른 후보가 역전) 재검토.
+GNN_DEFAULT_EDGE_TYPE = "geo"
 GNN_HIDDEN_DIM = 64
 GNN_NUM_LAYERS = 2
 GNN_DROPOUT = 0.3

@@ -167,7 +167,8 @@ def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *,
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--edge_type", choices=["geo", "temporal", "weapon", "all"], default="all")
+    parser.add_argument("--edge_type", choices=["geo", "temporal", "weapon", "all"],
+                         default=C.GNN_DEFAULT_EDGE_TYPE)
     parser.add_argument("--hidden_dim", type=int, default=C.GNN_HIDDEN_DIM)
     parser.add_argument("--num_layers", type=int, default=C.GNN_NUM_LAYERS)
     parser.add_argument("--dropout", type=float, default=C.GNN_DROPOUT)
