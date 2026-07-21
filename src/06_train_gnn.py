@@ -13,9 +13,12 @@ GraphSAGE를 학습해 flat 베이스라인(05_train_baseline.py, balanced_accur
    (train_test_split은 n·stratify·random_state에만 의존하므로 X 내용과
    무관하게 05_train_baseline.py와 같은 test 행 집합이 나옴)
    → train 풀에서 val 추가 분리(조기 종료용)
-   → 후보별: edges_{edge_type}.npy 로드 → GraphSAGE 학습(val balanced_accuracy
-     기준 조기 종료) → test 평가(베이스라인과 동일 지표·동일 0.5 임계값)
+   → 후보별: edges_{edge_type}_k{k}.npy 로드(--k_neighbors로 04_build_graph.py
+     --k 결과 중 선택) → GraphSAGE 학습(val balanced_accuracy 기준 조기 종료)
+     → test 평가(베이스라인과 동일 지표·동일 0.5 임계값)
    → outputs/gnn_metrics.csv에 한 줄씩 append
+
+--edge_type geo_temporal은 geo·temporal 엣지의 합집합(중복 제거)을 쓴다.
 """
 import argparse
 import time
@@ -57,8 +60,19 @@ def make_splits(y, test_size, val_size, random_state):
     return train_idx, val_idx, test_idx
 
 
-def build_data(X, edge_type, device):
-    edges = np.load(C.GRAPH_DIR / f"edges_{edge_type}.npy")
+def _load_edges(name, k):
+    return np.load(C.GRAPH_DIR / f"edges_{name}_k{k}.npy")
+
+
+def build_data(X, edge_type, k, device):
+    if edge_type == "geo_temporal":
+        # geo와 temporal 엣지의 합집합(중복 제거). geo의 강한 신호 + temporal의
+        # 균일한 연결성(고립노드 0)이 서로 보완되는지 확인하는 실험용 조합.
+        geo = _load_edges("geo", k)
+        temporal = _load_edges("temporal", k)
+        edges = np.unique(np.concatenate([geo, temporal], axis=1).T, axis=0).T.astype(np.int64)
+    else:
+        edges = _load_edges(edge_type, k)
     x = torch.tensor(X.values.astype(np.float32))
     edge_index = torch.from_numpy(edges).long()
     return Data(x=x, edge_index=edge_index).to(device)
@@ -167,8 +181,11 @@ def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *,
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--edge_type", choices=["geo", "temporal", "weapon", "all"],
+    parser.add_argument("--edge_type",
+                         choices=["geo", "temporal", "weapon", "geo_temporal", "all"],
                          default=C.GNN_DEFAULT_EDGE_TYPE)
+    parser.add_argument("--k_neighbors", type=int, default=C.K_NEIGHBORS,
+                         help="04_build_graph.py --k로 만든 그래프 중 어느 것을 쓸지 선택")
     parser.add_argument("--hidden_dim", type=int, default=C.GNN_HIDDEN_DIM)
     parser.add_argument("--num_layers", type=int, default=C.GNN_NUM_LAYERS)
     parser.add_argument("--dropout", type=float, default=C.GNN_DROPOUT)
@@ -198,8 +215,8 @@ def main():
     out_csv = C.OUTPUT_DIR / "gnn_metrics.csv"
 
     for edge_type in edge_types:
-        data = build_data(X, edge_type, device)
-        print(f"[graph:{edge_type}] 엣지 {data.edge_index.shape[1]:,}개(방향)")
+        data = build_data(X, edge_type, args.k_neighbors, device)
+        print(f"[graph:{edge_type}] 엣지 {data.edge_index.shape[1]:,}개(방향), k={args.k_neighbors}")
 
         row = train_one(
             edge_type, data, y_t, train_idx_t, val_idx_t, test_idx_t,
@@ -208,6 +225,7 @@ def main():
             max_epochs=args.max_epochs, patience=args.patience,
             val_size=args.val_size, tag=args.tag, device=device,
         )
+        row["k_neighbors"] = args.k_neighbors
         pd.DataFrame([row]).to_csv(
             out_csv, mode="a", header=not out_csv.exists(), index=False, encoding="utf-8-sig")
         print(f"[save] {out_csv} (append)")

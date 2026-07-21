@@ -15,10 +15,14 @@
 흐름:
   sample.parquet(블로킹 키) + features.parquet(정렬 확인용) 로드
    → 후보 3종 각각: 블로킹 → 블록별 엣지 생성 → 대칭화
-   → data/processed/graph/edges_{geo,temporal,weapon}.npy 저장
+   → data/processed/graph/edges_{geo,temporal,weapon}_k{k}.npy 저장
    → 후보별 평균 차수·고립 노드·연결 성분 계산
-   → outputs/graph_edge_comparison.csv 저장
+   → outputs/graph_edge_comparison.csv에 append
+
+--k로 차수 상한을 바꿔가며 재실행 가능(ablation). 06_train_gnn.py의
+--k_neighbors가 여기서 만든 파일명과 맞물려 있으니 같이 바꿔야 한다.
 """
+import argparse
 import zlib
 
 import numpy as np
@@ -85,13 +89,19 @@ def graph_stats(edges, n_nodes):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--k", type=int, default=C.K_NEIGHBORS,
+                         help="블록당 노드 차수 상한 (ablation용, 기본 config.K_NEIGHBORS)")
+    args = parser.parse_args()
+    k = args.k
+
     sample_df = pd.read_parquet(C.PROCESSED_DIR / "sample.parquet")
     feat_df = pd.read_parquet(C.PROCESSED_DIR / "features.parquet")
     assert len(sample_df) == len(feat_df), "행 수 불일치: sample vs features"
     assert (sample_df[C.TARGET_BIN].values == feat_df[C.TARGET_BIN].values).all(), \
         "행 순서 불일치: sample.parquet과 features.parquet이 위치 기준으로 정렬돼 있지 않음"
     n = len(sample_df)
-    print(f"[load] sample {n:,}행, features {n:,}행 (정렬 확인 완료)")
+    print(f"[load] sample {n:,}행, features {n:,}행 (정렬 확인 완료), k={k}")
 
     candidates = {
         "geo": C.GEO_BLOCK_COLS,
@@ -105,22 +115,22 @@ def main():
         print(f"[block:{name}] {block_cols} {len(sizes)}개 블록, "
               f"최대 {sizes.max():,}행, 최소 {sizes.min()}행")
 
-        edges = build_block_graph(sample_df, block_cols, C.K_NEIGHBORS, C.RANDOM_STATE)
+        edges = build_block_graph(sample_df, block_cols, k, C.RANDOM_STATE)
         stats = graph_stats(edges, n)
         print(f"[edges:{name}] 무방향 {stats['n_edges']:,}개, 평균 차수 {stats['avg_degree']:.2f}")
         print(f"[stats:{name}] 고립노드 {stats['isolated_nodes']:,}개({stats['isolated_pct']:.2f}%), "
               f"연결성분 {stats['n_components']:,}개, 최대성분 {stats['largest_component_pct']:.1f}%")
 
-        out = C.GRAPH_DIR / f"edges_{name}.npy"
+        out = C.GRAPH_DIR / f"edges_{name}_k{k}.npy"
         np.save(out, edges)
         print(f"[save] {out}")
 
-        rows.append({"candidate": name, **stats})
+        rows.append({"candidate": name, "k": k, **stats})
 
     table = pd.DataFrame(rows).set_index("candidate")
     out_csv = C.OUTPUT_DIR / "graph_edge_comparison.csv"
-    table.to_csv(out_csv, encoding="utf-8-sig")
-    print(f"\n[save] {out_csv}")
+    table.to_csv(out_csv, mode="a", header=not out_csv.exists(), encoding="utf-8-sig")
+    print(f"\n[save] {out_csv} (append)")
     print(table)
 
 

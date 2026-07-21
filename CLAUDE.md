@@ -27,9 +27,14 @@ python 02_sample.py           # -> data/processed/sample.parquet
 python 03_features.py         # -> data/processed/features.parquet
 python eda.py                 # -> outputs/eda_*.csv, outputs/eda_*.png
 python 05_train_baseline.py   # -> outputs/baseline_metrics.csv, outputs/baseline_xgb_top_features.csv
-python 04_build_graph.py      # -> data/processed/graph/edges_{geo,temporal,weapon}.npy, outputs/graph_edge_comparison.csv
-python 06_train_gnn.py        # -> outputs/gnn_metrics.csv (appends; trains all 3 edge types by default)
-python 06_train_gnn.py --edge_type geo --hidden_dim 128 --tag my_sweep  # ablation: any hyperparam overridable via CLI
+python 04_build_graph.py            # -> data/processed/graph/edges_{geo,temporal,weapon}_k{k}.npy (k=config.K_NEIGHBORS)
+python 04_build_graph.py --k 20     # rebuild at a different degree cap (needed before --k_neighbors 20 below works)
+python 06_train_gnn.py              # -> outputs/gnn_metrics.csv (appends; defaults to config.GNN_DEFAULT_EDGE_TYPE="geo" only)
+python 06_train_gnn.py --edge_type all                                   # train geo+temporal+weapon for comparison
+python 06_train_gnn.py --edge_type geo --hidden_dim 128 --tag my_sweep   # any hyperparam overridable via CLI
+python 06_train_gnn.py --edge_type geo --k_neighbors 20                  # use a --k 20 graph built above
+python 06_train_gnn.py --edge_type geo_temporal                          # union of geo+temporal edges
+python ablation_sweep.py            # one-factor-at-a-time hyperparam sweep around config.GNN_* defaults
 ```
 
 Scripts must run from `src/` and in this order — each stage reads the parquet
@@ -96,6 +101,24 @@ be invoked repeatedly for ablation sweeps. Its output,
 `outputs/gnn_metrics.csv`, **appends** rather than overwrites (unlike
 `baseline_metrics.csv`, which is a snapshot re-generated each run) — it's an
 accumulating experiment log, distinguished by the `edge_type`/`tag` columns.
+`04_build_graph.py --k` similarly appends to `outputs/graph_edge_comparison.csv`
+and encodes `k` into the `.npy` filename (`edges_geo_k20.npy`) — `06_train_gnn.py
+--k_neighbors` picks which of those to load, so a `--k_neighbors N` run
+requires `04_build_graph.py --k N` to have been run first, else it's a missing-file
+error, not a silent fallback.
+
+**Of the 3 edge candidates, only `geo` (State+City blocking) beat the XGBoost
+baseline** on all 4 metrics (see `outputs/gnn_metrics.csv`) — `config.GNN_DEFAULT_EDGE_TYPE
+= "geo"` reflects that decision; `temporal`/`weapon`/`geo_temporal` (their
+union) remain runnable via `--edge_type` but aren't the default.
+`src/ablation_sweep.py` (unnumbered utility, same tier as `eda.py` — no
+pipeline artifact of its own) drives `06_train_gnn.py` repeatedly to vary one
+hyperparameter at a time from the `config.GNN_*` defaults, then summarizes
+`gnn_metrics.csv` by dimension. Best config found so far: `k_neighbors=20,
+lr=0.005` (rest at defaults) → balanced_accuracy 0.6525, vs. 0.6456 baseline
+and 0.6507 at all-defaults — `num_layers=1` and `aggr="max"` are clearly
+worse (graph structure and mean-aggregation both matter), everything else is
+fairly flat around the defaults.
 
 **Target leakage is the load-bearing constraint of this dataset.** Perpetrator
 columns (`Perpetrator Sex/Age/Race/Ethnicity/Count`, `Relationship`) are
