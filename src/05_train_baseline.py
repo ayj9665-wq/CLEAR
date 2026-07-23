@@ -8,76 +8,76 @@
 논문 기준 반영:
   - 70/30 무작위 층화 분할
   - 5-fold 층화 교차검증(하이퍼파라미터 소규모 그리드)
-  - 평가지표: Balanced Accuracy + Precision (+ ROC-AUC, PR-AUC 보조)
+  - 평가지표: AUC / MCC / F1 / Sensitivity / Specificity — MCC를 대표 지표로
+    삼는다(클래스 불균형에 강건한 단일 스칼라, 이전 balanced_accuracy의 역할)
   - 클래스 불균형: scale_pos_weight / class_weight
 
 흐름:
   features.parquet 로드 → X / y 분리
-   → 70/30 층화 분할
+   → 70/30 층화 분할(clear.data.get_split, 06과 동일 test 집합)
    → LogisticRegression, XGBoost 학습
    → 5-fold CV 로 XGBoost 소규모 튜닝
-   → 지표 계산 → outputs/baseline_metrics.csv, 특성 중요도 저장
+   → 지표 계산 → outputs/metrics.csv(06과 공통 원장)에 append, 특성 중요도 저장
+
+baseline은 결정적(고정 split·고정 random_state)이라 모델당 1행이다. GNN처럼
+seed 반복을 하지 않는 이유: seed로 split을 바꾸면 test 집합이 달라져 06과의
+비교 가능성이 깨진다. 그래서 baseline은 고정 test 위의 단일 기준점으로 남긴다.
 """
-import numpy as np
+from datetime import datetime
+
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split, StratifiedKFold, GridSearchCV
-from sklearn.metrics import (
-    balanced_accuracy_score, precision_score, roc_auc_score,
-    average_precision_score, confusion_matrix, classification_report,
-)
+from sklearn.model_selection import StratifiedKFold, GridSearchCV
+from sklearn.metrics import confusion_matrix, classification_report
 from xgboost import XGBClassifier
+
 import config as C
+from clear.data import load_xy, get_split
+from clear.metrics import evaluate as compute_metrics
+from clear import ledger
 
 
-def load_xy():
-    df = pd.read_parquet(C.PROCESSED_DIR / "features.parquet")
-    sens_cols = [c for c in df.columns if c.startswith("sens__")]
-    y = df[C.TARGET_BIN].values
-    X = df.drop(columns=[C.TARGET_BIN] + sens_cols)
-    # bool 더미 → int
-    X = X.astype({c: "int8" for c in X.columns if X[c].dtype == bool})
-    return X, y
-
-
-def evaluate(name, model, X_te, y_te, rows):
-    pred = model.predict(X_te)
+def evaluate(name, model, X_te, y_te, seed, rows):
+    """지표는 clear.metrics(06과 공통)로 계산하고, baseline 특유의
+    혼동행렬·classification_report 진단만 여기서 추가로 출력한다.
+    원장 스키마에 맞춰 timestamp/model/tag/seed를 단 행을 rows에 담는다."""
     proba = model.predict_proba(X_te)[:, 1]
-    m = {
-        "model": name,
-        "balanced_accuracy": balanced_accuracy_score(y_te, pred),
-        "precision": precision_score(y_te, pred),
-        "roc_auc": roc_auc_score(y_te, proba),
-        "pr_auc": average_precision_score(y_te, proba),
-    }
+    metric_vals = compute_metrics(y_te, proba)
     print(f"\n=== {name} ===")
-    for k, v in m.items():
-        if k != "model":
-            print(f"  {k:18s}: {v:.4f}")
+    for k, v in metric_vals.items():
+        print(f"  {k:18s}: {v:.4f}")
+    pred = (proba >= 0.5).astype(int)
     print("  confusion matrix [[TN FP][FN TP]]:")
     print("  ", confusion_matrix(y_te, pred).tolist())
     print(classification_report(y_te, pred, target_names=["미해결", "검거"]))
-    rows.append(m)
+    rows.append({
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "model": name, "tag": "", "seed": seed, **metric_vals,
+    })
 
 
 def main():
     X, y = load_xy()
     print(f"[data] X {X.shape}, 검거율 {y.mean():.1%}")
 
-    X_tr, X_te, y_tr, y_te = train_test_split(
-        X, y, test_size=C.TEST_SIZE, stratify=y, random_state=C.RANDOM_STATE)
-    print(f"[split] train {len(y_tr):,} / test {len(y_te):,} (70/30 층화)")
+    # get_split의 trainval(=예전 train_test_split의 train쪽, 순서 보존)로
+    # 학습, test는 06_train_gnn.py와 동일 집합. CV는 이 trainval 안에서 돈다.
+    split = get_split(y)
+    X_tr, y_tr = X.iloc[split.trainval], y[split.trainval]
+    X_te, y_te = X.iloc[split.test], y[split.test]
+    print(f"[split] train {len(y_tr):,} / test {len(y_te):,} (70/30 층화, 06과 동일 test)")
 
     # 불균형 가중치
     pos = y_tr.sum(); neg = len(y_tr) - pos
     spw = neg / max(pos, 1)
 
     rows = []
+    seed = C.RANDOM_STATE   # baseline은 이 고정 seed의 단일 기준점
 
     # 1) 로지스틱 회귀 베이스라인
     logit = LogisticRegression(max_iter=1000, class_weight="balanced")
     logit.fit(X_tr, y_tr)
-    evaluate("LogisticRegression", logit, X_te, y_te, rows)
+    evaluate("logreg", logit, X_te, y_te, seed, rows)
 
     # 2) XGBoost + 5-fold CV 소규모 튜닝
     cv = StratifiedKFold(n_splits=C.CV_FOLDS, shuffle=True, random_state=C.RANDOM_STATE)
@@ -87,16 +87,16 @@ def main():
         eval_metric="logloss", tree_method="hist", random_state=C.RANDOM_STATE,
         n_jobs=-1,
     )
-    gs = GridSearchCV(xgb, grid, scoring="balanced_accuracy", cv=cv, n_jobs=-1, verbose=1)
+    gs = GridSearchCV(xgb, grid, scoring="matthews_corrcoef", cv=cv, n_jobs=-1, verbose=1)
     gs.fit(X_tr, y_tr)
     print(f"\n[XGB best params] {gs.best_params_}")
-    print(f"[XGB CV best balanced_accuracy] {gs.best_score_:.4f}")
-    evaluate("XGBoost", gs.best_estimator_, X_te, y_te, rows)
+    print(f"[XGB CV best MCC] {gs.best_score_:.4f}")
+    evaluate("xgboost", gs.best_estimator_, X_te, y_te, seed, rows)
 
-    # 저장: 지표
-    out_m = C.OUTPUT_DIR / "baseline_metrics.csv"
-    pd.DataFrame(rows).to_csv(out_m, index=False, encoding="utf-8-sig")
-    print(f"\n[save] {out_m}")
+    # 저장: 지표 → 06과 공통 원장(outputs/metrics.csv)에 append
+    for r in rows:
+        ledger.append(r)
+    print(f"\n[save] {ledger.LEDGER_PATH} (append, {len(rows)}행)")
 
     # 저장: XGB 특성 중요도 top 25
     imp = pd.Series(gs.best_estimator_.feature_importances_, index=X.columns)

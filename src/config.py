@@ -83,7 +83,10 @@ GRAPH_DIR = PROCESSED_DIR / "graph"
 GRAPH_DIR.mkdir(parents=True, exist_ok=True)
 
 # 노드당 신규 이웃 상한(차수 상한). 대칭화 후 실제 차수는 k~2k 사이.
-K_NEIGHBORS = 10
+# k=5/10/20/30 ablation 결과 k=20이 근소 최선(balanced_accuracy 0.6511 @
+# lr=0.01, lr=0.005와 결합 시 0.6525)이라 기본값으로 승격. k=5만 확실히
+# 나쁘고 10~30은 평평함 — 데이터가 커지면(예: 전국 확장) 재검토 필요.
+K_NEIGHBORS = 20
 # 엣지 후보 3종의 블로킹 키. Agency Code/Name은 01_clean.py에서 이미 제거돼
 # City가 가장 세밀한 지리 단위. 같은 블록 안에서는 더 세밀한 유사도 기준이
 # 없으므로, 실제 거리 계산 대신 "정확 일치 블로킹 + 블록 내 k개 결정적 선택"
@@ -102,9 +105,17 @@ GNN_DEFAULT_EDGE_TYPE = "geo"
 GNN_HIDDEN_DIM = 64
 GNN_NUM_LAYERS = 2
 GNN_DROPOUT = 0.3
-GNN_LR = 0.01
+# one-factor-at-a-time 스윕에서 lr=0.005가 기본값(0.01)보다 근소하게 나아
+# 승격(k=20과 결합 시 balanced_accuracy 0.6525, 최고 기록). num_layers=1과
+# aggr=max는 확실히 나빠서(그래프 깊이·mean 집계가 중요) 그대로 기본 유지.
+GNN_LR = 0.005
 GNN_WEIGHT_DECAY = 5e-4
 GNN_AGGR = "mean"
 GNN_MAX_EPOCHS = 200
 GNN_PATIENCE = 20
 GNN_VAL_SIZE = 0.15        # train+val 풀 중 val 비율
+# seed 반복: split은 RANDOM_STATE로 고정하고 torch seed만 바꿔 GNN 학습 분산을
+# 측정한다(GPU scatter 집계 비결정성 + 초기화 분산). 한 config를 이 seed들로
+# 돌려 mean±std를 남긴다 — 임계값 의존 지표(F1/Sens/Spec)가 run마다 ±3~4점
+# 흔들려서, 단일 run 비교는 신뢰할 수 없기 때문. baseline은 결정적이라 1행.
+GNN_SEEDS = [42, 43, 44]

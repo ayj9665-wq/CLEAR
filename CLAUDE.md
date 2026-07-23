@@ -26,15 +26,16 @@ python 01_clean.py            # raw CSV -> data/processed/clean.parquet
 python 02_sample.py           # -> data/processed/sample.parquet
 python 03_features.py         # -> data/processed/features.parquet
 python eda.py                 # -> outputs/eda_*.csv, outputs/eda_*.png
-python 05_train_baseline.py   # -> outputs/baseline_metrics.csv, outputs/baseline_xgb_top_features.csv
+python 05_train_baseline.py   # -> outputs/metrics.csv (shared ledger, appends), outputs/baseline_xgb_top_features.csv
 python 04_build_graph.py            # -> data/processed/graph/edges_{geo,temporal,weapon}_k{k}.npy (k=config.K_NEIGHBORS)
 python 04_build_graph.py --k 20     # rebuild at a different degree cap (needed before --k_neighbors 20 below works)
-python 06_train_gnn.py              # -> outputs/gnn_metrics.csv (appends; defaults to config.GNN_DEFAULT_EDGE_TYPE="geo" only)
+python 06_train_gnn.py              # -> outputs/metrics.csv (appends; geo only, one row per config.GNN_SEEDS seed)
 python 06_train_gnn.py --edge_type all                                   # train geo+temporal+weapon for comparison
 python 06_train_gnn.py --edge_type geo --hidden_dim 128 --tag my_sweep   # any hyperparam overridable via CLI
 python 06_train_gnn.py --edge_type geo --k_neighbors 20                  # use a --k 20 graph built above
+python 06_train_gnn.py --edge_type geo --seeds 42,43,44                  # torch seeds to repeat over (split stays fixed)
 python 06_train_gnn.py --edge_type geo_temporal                          # union of geo+temporal edges
-python ablation_sweep.py            # one-factor-at-a-time hyperparam sweep around config.GNN_* defaults
+python ablation_sweep.py            # in-process one-factor-at-a-time sweep; mean±std over config.GNN_SEEDS
 ```
 
 Scripts must run from `src/` and in this order — each stage reads the parquet
@@ -51,16 +52,25 @@ the single source of truth for paths, target encoding, column lists, and
 hyperparameters (random state, split ratios, CV folds). When changing any of
 these, edit `config.py` rather than a script.
 
-**Pipeline is a chain of scripts, not a package**: each `NN_*.py` file is a
-standalone stage that reads a parquet (or `.npy`) from `data/processed/`,
-transforms it, and writes the next artifact. No script imports another
-numbered script — a leading digit isn't a valid Python identifier, so
-`import 05_train_baseline` simply doesn't work — everything shares state only
-through `config.py` and files on disk. `05_train_baseline.py` was built
-before `04_build_graph.py`/`06_train_gnn.py` despite the lower number: it's
-the pre-graph performance floor (flat XGBoost/LogReg) the GNN has to beat, so
-it needed to exist first. `07_fairness.py` (fairness diagnosis, week 3) is
-still unimplemented — that's the one remaining numbering gap.
+**Numbered scripts are thin stages; shared logic lives in the `clear/`
+package.** Each `NN_*.py` file is a standalone pipeline stage that reads a
+parquet (or `.npy`) from `data/processed/`, transforms it, and writes the next
+artifact. A leading digit isn't a valid Python identifier, so
+`import 05_train_baseline` simply doesn't work — which is exactly *why* logic
+that two stages must share can't live in a numbered file. That shared logic
+lives in `src/clear/` (a normal importable package): `clear.data` (`load_xy`,
+`get_split`), `clear.metrics` (`evaluate` — the one AUC/MCC/F1/Sens/Spec
+definition), `clear.graph` (edge loading + `geo_temporal`-style unions),
+`clear.gnn` (the GraphSAGE model + training loop), `clear.ledger` (the shared
+`outputs/metrics.csv` log). The numbered scripts (`05`, `06`) and the
+unnumbered `ablation_sweep.py` are thin CLIs over `clear/`; `config.py` still
+holds all paths/constants. This replaced an earlier state where `load_xy`,
+the metric block, and the split were copy-pasted across `05`/`06` and kept in
+sync by hand. `05_train_baseline.py` was built before
+`04_build_graph.py`/`06_train_gnn.py` despite the lower number: it's the
+pre-graph performance floor (flat XGBoost/LogReg) the GNN has to beat, so it
+needed to exist first. `07_fairness.py` (fairness diagnosis, week 3) is still
+unimplemented — that's the one remaining numbering gap.
 
 ```
 dataset/kaggle_homicide_Reports_1980_2014.csv  (not in git, ~638k rows)
@@ -87,38 +97,53 @@ across process runs) to avoid an O(n²) blowup on huge blocks (e.g. LA alone is
 ~44k rows). Edge arrays are stored pre-symmetrized (both `(i,j)` and `(j,i)`
 present) — already the format PyG's `edge_index` wants directly.
 
-**`06_train_gnn.py` reproduces `05_train_baseline.py`'s exact test split**
-by calling `train_test_split` with the same `n`/`stratify`/`random_state`
-(row assignment depends only on those three things, not on what's in `X`),
-so GraphSAGE's test metrics are directly comparable to the XGBoost baseline's.
-It carves an additional validation slice out of the training portion only,
-for early stopping on validation balanced accuracy (not validation loss —
-the reweighted `BCEWithLogitsLoss` doesn't track balanced accuracy 1:1).
-Unlike every other script, its hyperparameters are `argparse`-overridable
-(defaults still live in `config.py` as `GNN_*` constants, so a no-args run
-matches every other script's zero-CLI-arg convention) because it's meant to
-be invoked repeatedly for ablation sweeps. Its output,
-`outputs/gnn_metrics.csv`, **appends** rather than overwrites (unlike
-`baseline_metrics.csv`, which is a snapshot re-generated each run) — it's an
-accumulating experiment log, distinguished by the `edge_type`/`tag` columns.
+**`05` and `06` share one test split via `clear.data.get_split`**, so
+GraphSAGE's test metrics are directly comparable to the XGBoost baseline's —
+comparability is now guaranteed by *calling the same function*, not (as
+before) by re-calling `train_test_split` with matching args and trusting the
+"row assignment depends only on `n`/`stratify`/`random_state`" invariant. The
+baseline trains on the split's `trainval` (order preserved, so its CV folds
+are byte-identical to before); the GNN carves a further validation slice for
+early stopping on validation MCC (not validation loss — the reweighted
+`BCEWithLogitsLoss` doesn't track MCC 1:1). `06`'s hyperparameters are
+`argparse`-overridable (defaults live in `config.py` as `GNN_*` constants, so a
+no-args run matches the zero-CLI-arg convention) because it's meant to be
+invoked repeatedly. **Both `05` and `06` append to one shared ledger,
+`outputs/metrics.csv`** (`clear.ledger`), each row tagged with a `model`
+column (`logreg`/`xgboost`/`graphsage`) — so "did the GNN beat baseline" is a
+single `ledger.summarize()` groupby, not a cross-file comparison. Rows are
+reindexed to a fixed schema on append, so baseline rows (which leave the GNN
+hyperparameter columns empty) stay column-aligned with GNN rows. **`06` runs
+each config over `config.GNN_SEEDS`** (varying only the torch seed; the split
+stays fixed so every seed shares the baseline's test set), because GPU
+scatter-aggregation is non-deterministic and the threshold-dependent metrics
+(F1/Sens/Spec) swing ±3–4 points run-to-run — MCC/AUC are stable. `summarize`
+reports mean±std so a margin can be judged against that noise; the baseline is
+deterministic and stays one reference row per model.
 `04_build_graph.py --k` similarly appends to `outputs/graph_edge_comparison.csv`
 and encodes `k` into the `.npy` filename (`edges_geo_k20.npy`) — `06_train_gnn.py
 --k_neighbors` picks which of those to load, so a `--k_neighbors N` run
 requires `04_build_graph.py --k N` to have been run first, else it's a missing-file
 error, not a silent fallback.
 
-**Of the 3 edge candidates, only `geo` (State+City blocking) beat the XGBoost
-baseline** on all 4 metrics (see `outputs/gnn_metrics.csv`) — `config.GNN_DEFAULT_EDGE_TYPE
-= "geo"` reflects that decision; `temporal`/`weapon`/`geo_temporal` (their
-union) remain runnable via `--edge_type` but aren't the default.
+**Of the 3 edge candidates, `geo` (State+City blocking) is the default**
+(`config.GNN_DEFAULT_EDGE_TYPE = "geo"`): it clears the XGBoost baseline on the
+**stable** metrics — MCC (0.285 ± 0.0001 vs 0.274) and AUC (0.712 ± 0.001 vs
+0.703), margins ~10–100× the GNN's own seed-to-seed noise. The apparent
+F1/Sensitivity ordering between GNN and baseline is **within** that noise
+(sensitivity std ≈ 0.02), so it isn't claimed as a win — this is exactly what
+the seed-repeats were added to expose. `temporal`/`weapon`/`geo_temporal`
+(their union) remain runnable via `--edge_type` but aren't the default.
 `src/ablation_sweep.py` (unnumbered utility, same tier as `eda.py` — no
-pipeline artifact of its own) drives `06_train_gnn.py` repeatedly to vary one
-hyperparameter at a time from the `config.GNN_*` defaults, then summarizes
-`gnn_metrics.csv` by dimension. Best config found so far: `k_neighbors=20,
-lr=0.005` (rest at defaults) → balanced_accuracy 0.6525, vs. 0.6456 baseline
-and 0.6507 at all-defaults — `num_layers=1` and `aggr="max"` are clearly
-worse (graph structure and mean-aggregation both matter), everything else is
-fairly flat around the defaults.
+pipeline artifact of its own) now **imports `clear.gnn` and runs in-process**
+(loads the data once) instead of `subprocess`-relaunching `06` per config; it
+varies one hyperparameter at a time from the `config.GNN_*` defaults over
+`config.GNN_SEEDS`, then summarizes the `outputs/metrics.csv` ledger by
+dimension as mean±std, ranked on MCC. Best config found so far:
+`k_neighbors=20, lr=0.005` (rest at defaults, both since promoted into
+`config.py`) — `num_layers=1` and `aggr="max"` are clearly worse (graph depth
+and mean-aggregation both matter), everything else is fairly flat around the
+defaults (which is itself a mean±std judgment now, not a single-run one).
 
 **Target leakage is the load-bearing constraint of this dataset.** Perpetrator
 columns (`Perpetrator Sex/Age/Race/Ethnicity/Count`, `Relationship`) are
@@ -128,20 +153,37 @@ excluded from any model input; a suspiciously high AUC (~0.99) is the signal
 this was reintroduced (see Plan B risk table in the dev plan doc).
 
 **Methodology follows Campedelli (2022, *Journal of Criminal Justice*)** by
-deliberate design choice, not just convention: full one-hot encoding (not
-embeddings/ordinal), 5-year age binning, 70/30 random stratified split,
-5-fold stratified CV, and Balanced Accuracy + Precision as primary metrics
-(ROC-AUC/PR-AUC are secondary). Deviating from these should be a conscious
-decision, since the baseline is meant to be paper-comparable.
+deliberate design choice, not just convention, for everything except the
+evaluation metrics: full one-hot encoding (not embeddings/ordinal), 5-year
+age binning, 70/30 random stratified split, 5-fold stratified CV. Deviating
+from these should be a conscious decision, since the baseline is meant to be
+paper-comparable on the data/split/encoding side.
+
+**Evaluation metrics are AUC/MCC/F1/Sensitivity/Specificity**, not the
+paper's Balanced Accuracy + Precision — a deliberate later deviation (not
+what the paper reports). There is now a single definition of this metric set,
+`clear.metrics.evaluate`, that both `05` and `06` call (it used to be
+copy-pasted into each and kept in sync by hand), so they can't drift apart.
+MCC is the
+representative scalar for model selection (`GridSearchCV(scoring=
+"matthews_corrcoef")` in the baseline, validation-MCC early stopping in the
+GNN, MCC-sorted ablation summaries) because it stays informative under this
+dataset's ~32%/68% class imbalance the way plain accuracy wouldn't.
+Sensitivity = recall on the positive (solved) class; Specificity =
+`recall_score(y, pred, pos_label=0)`, i.e. recall on the negative (unsolved)
+class — both via sklearn's `recall_score` rather than manual confusion-matrix
+arithmetic.
 
 **Sensitive attributes** (`Victim Race`, `Victim Sex`) are carried through
 `03_features.py` as `sens__*` columns *unencoded*, separate from the model
 input matrix `X` — they exist for the fairness diagnosis stage, not for
-training. `05_train_baseline.py:load_xy()` explicitly strips them before
-fitting.
+training. `clear.data.load_xy()` (shared by `05`/`06`) explicitly strips them
+before fitting.
 
 `outputs/` and `data/processed/` are gitignored (regenerable); the raw CSV in
-`dataset/` is also gitignored (too large to commit).
+`dataset/` is also gitignored (too large to commit). The shared metrics ledger
+is `outputs/metrics.csv` (both trainers append; `model` column distinguishes
+rows); it supersedes the old per-model `baseline_metrics.csv`/`gnn_metrics.csv`.
 
 ## Environment notes (Windows, non-ASCII user path)
 
