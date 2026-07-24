@@ -22,11 +22,20 @@ n x B개의 인덱스를 뽑을 필요 없이 그룹당 (B,4) 행렬 하나면 �
 
 **부트스트랩 설계 (3) 모델 간 비교는 짝지어야 한다.** 여러 모델은 *같은 test 행*을
 쓰므로, 모델마다 독립으로 CI를 내고 "구간이 겹치니 차이 없다"고 읽으면 틀린다
-(겹치는 독립 CI는 유의한 차이와 얼마든지 공존한다). 그래서 M개 모델을 동시에
-진단할 때는 칸을 **결합 칸(joint cell)**으로 올린다 — 한 행은 (모델1 칸, ...,
-모델M 칸) 조합 중 하나에 속하므로 4^M칸이고, 그룹 내 복원추출은 그 4^M칸에 대한
-multinomial과 같다. 한 번 뽑은 결합 표본에서 각 모델의 4칸을 주변화(marginalize)해
-쓰므로, 모델 A와 B의 격차 차이를 복제본마다 **짝지어** 계산할 수 있다.
+(겹치는 독립 CI는 유의한 차이와 얼마든지 공존한다). 그래서 두 모델을 대조할 때는
+칸을 **결합 칸(joint cell)**으로 올린다 — 한 행은 (모델A 칸, 모델B 칸) 조합 중
+하나에 속하므로 16칸이고, 그룹 내 복원추출은 그 16칸에 대한 multinomial과 같다.
+한 번 뽑은 결합 표본에서 각 모델의 4칸을 주변화(marginalize)해 쓰므로, 두 모델의
+격차 차이를 복제본마다 **짝지어** 계산할 수 있다.
+
+**결합은 쌍 단위로만 한다(중요).** 처음엔 M개 모델 전체를 4^M칸으로 한 번에 뽑았다.
+6개까지는 됐지만(4096칸) 덤프가 늘면 파탄난다 — 10개면 100만 칸, 복제본 1000개에
+8GB다. 완화기법 산출물까지 쌓이면 금방 그 지경이 된다. 쌍별 결합(16칸)으로 낮춰도
+**통계적으로 동등**하다: 다항분포를 칸끼리 묶어 주변화하면 다시 다항분포이므로,
+쌍 대조에 필요한 결합분포는 전체 결합에서 그 쌍만 주변화한 것과 같은 분포다.
+개별 모델 CI도 같은 이유로 단일 모델(4칸) 추출로 낸다. 다만 난수 추출이 서로 달라,
+대조표가 함축하는 개별 값과 개별 모델 CI가 소수 셋째 자리에서 미세하게 다를 수 있다
+(같은 분포의 다른 표본이라 해석에는 영향 없다).
 
 **한계(반드시 함께 보고할 것)**: max-min 격차는 잡음 섞인 추정치들의 최댓값이라
 **위쪽으로 편향**된다. 그룹이 작을수록 심하고, 부트스트랩 백분위 CI는 이 편향을
@@ -213,55 +222,64 @@ def diagnose(dumps, attr, *, min_n=None, n_boot=None, seed=None):
         min_n = [C.FAIRNESS_MIN_GROUP_N]
     elif isinstance(min_n, (int, np.integer)):
         min_n = [int(min_n)]
-    jc, labels = joint_counts(dumps, attr)
-    jb = bootstrap_joint(jc, n_boot=n_boot, seed=seed)
-    M = len(labels)
+    labels = list(dumps)
 
-    counts = {lab: {g: marginal(c, m, M) for g, c in jc.items()}
-              for m, lab in enumerate(labels)}
-    boot = {lab: {g: marginal(b, m, M) for g, b in jb.items()}
-            for m, lab in enumerate(labels)}
+    def _one(subset):
+        """모델 부분집합의 (칸 카운트, 부트스트랩) — subset 크기만큼만 결합한다."""
+        jc, labs = joint_counts({l: dumps[l] for l in subset}, attr)
+        return jc, bootstrap_joint(jc, n_boot=n_boot, seed=seed), labs
 
-    ref_counts = counts[labels[0]]     # 그룹 n은 모델과 무관
-    group_sets = [("named_all", select_groups(ref_counts))]
-    group_sets += [(f"named_n>={m}", select_groups(ref_counts, m)) for m in sorted(min_n)]
+    # 그룹 집합은 그룹 n으로만 정해지므로(모델 무관) 아무 모델 하나로 계산한다.
+    jc0, jb0, _ = _one([labels[0]])
+    group_sets = [("named_all", select_groups(jc0))]
+    group_sets += [(f"named_n>={m}", select_groups(jc0, m)) for m in sorted(min_n)]
 
-    tables, gaps, samples = [], [], {}
+    # 개별 모델: 4칸 추출
+    tables, gaps = [], []
     for lab in labels:
-        gt = group_table(counts[lab], boot[lab])
+        jc, jb, _ = _one([lab]) if lab != labels[0] else (jc0, jb0, None)
+        gt = group_table(jc, jb)
         gt.insert(0, "model", lab)
         tables.append(gt)
         for set_label, groups in group_sets:
-            pt, stats = gap_samples(counts[lab], boot[lab], groups)
+            pt, stats = gap_samples(jc, jb, groups)
             gaps.append({"model": lab, **gap_row(stats, pt, groups, set_label)})
-            samples[(lab, set_label)] = stats
 
-    contrasts = model_contrasts(samples, labels, [s for s, _ in group_sets])
+    # 모델 쌍: 16칸 결합 추출 → 복제본마다 짝지어 차이를 낸다
+    contrasts = []
+    for a, b in itertools.combinations(labels, 2):
+        jc, jb, labs = _one([a, b])
+        side = {}
+        for i, lab in enumerate(labs):
+            c_i = {g: marginal(c, i, 2) for g, c in jc.items()}
+            b_i = {g: marginal(v, i, 2) for g, v in jb.items()}
+            side[lab] = (c_i, b_i)
+        for set_label, groups in group_sets:
+            sa = gap_samples(*side[a], groups)[1]
+            sb = gap_samples(*side[b], groups)[1]
+            contrasts += _contrast_rows(sa, sb, a, b, set_label)
+
     return (pd.concat(tables, ignore_index=True), pd.DataFrame(gaps),
             pd.DataFrame(contrasts))
 
 
-def model_contrasts(samples, labels, set_labels):
-    """모델 쌍의 격차·증폭비 차이 + CI(짝지은 복제본 기준).
+def _contrast_rows(sa, sb, a, b, set_label):
+    """한 모델 쌍·한 그룹집합의 대조 행들.
 
     diff > 0 이고 CI가 0을 안 걸치면 model_a가 model_b보다 격차를 더 키운다는 뜻.
-    쌍은 labels 순서 조합이라 실행마다 순서가 고정된다.
     """
     rows = []
-    for set_label in set_labels:
-        for a, b in itertools.combinations(labels, 2):
-            sa, sb = samples[(a, set_label)], samples[(b, set_label)]
-            for m in GAP_METRICS:
-                for kind, key in [("gap", m), ("amplification", f"{m}_amplification")]:
-                    d_pt = sa[key][0] - sb[key][0]
-                    d_bt = np.asarray(sa[key][1]) - np.asarray(sb[key][1])
-                    lo, hi = _ci(d_bt)
-                    rows.append({
-                        "group_set": set_label, "model_a": a, "model_b": b,
-                        "metric": m, "quantity": kind,
-                        "diff": d_pt, "diff_lo": lo, "diff_hi": hi,
-                        # CI가 0을 안 걸치면 방향성 있는 차이로 읽는다.
-                        "significant": bool(np.isfinite(lo) and np.isfinite(hi)
-                                            and (lo > 0 or hi < 0)),
-                    })
+    for m in GAP_METRICS:
+        for kind, key in [("gap", m), ("amplification", f"{m}_amplification")]:
+            d_pt = sa[key][0] - sb[key][0]
+            d_bt = np.asarray(sa[key][1]) - np.asarray(sb[key][1])
+            lo, hi = _ci(d_bt)
+            rows.append({
+                "group_set": set_label, "model_a": a, "model_b": b,
+                "metric": m, "quantity": kind,
+                "diff": d_pt, "diff_lo": lo, "diff_hi": hi,
+                # CI가 0을 안 걸치면 방향성 있는 차이로 읽는다.
+                "significant": bool(np.isfinite(lo) and np.isfinite(hi)
+                                    and (lo > 0 or hi < 0)),
+            })
     return rows

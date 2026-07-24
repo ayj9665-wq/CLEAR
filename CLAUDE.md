@@ -252,11 +252,16 @@ so resampling is stratified within each group. Two implementation points
 matter. (1) Instead of drawing n×B row indices, note that every row falls in
 one of the four TN/FP/FN/TP cells, so a within-group resample is *exactly* a
 `Multinomial(n, cell_proportions)` draw — a `(B,4)` matrix per group, which is
-why B=1000 over 57k rows is instant. (2) When several models are diagnosed at
-once, the draw is lifted to **joint cells**: a row's cell is the tuple of its
-per-model cells (4^M of them), one multinomial draw is marginalized back to
-each model's `(B,4)`, and model-vs-model differences are therefore computed
-**paired within replicate**. This is load-bearing, not decoration — comparing
+why B=1000 over 57k rows is instant. (2) Model-vs-model differences are computed **paired within
+replicate**, by lifting the draw to **joint cells** — a row's cell becomes the
+pair of its two per-model cells (16 of them), and one multinomial draw is
+marginalized back to each model's `(B,4)`. Pairwise, not all-models-at-once:
+an earlier version jointly drew 4^M cells across every dump, which dies once
+dumps accumulate (10 dumps × 1000 replicates ≈ 8 GB). Restricting the join to
+the pair being contrasted is statistically equivalent — marginalizing a
+multinomial over grouped cells gives back a multinomial — and diagnosing seven
+dumps takes 1.9 s. Point estimates are deterministic; CI bounds are Monte
+Carlo and move in the third decimal if the draw structure changes. This is load-bearing, not decoration — comparing
 each model's independent CI for overlap is invalid on a shared test set, and
 in practice it flips a conclusion here: GraphSAGE's and XGBoost's sex-gap
 amplification CIs overlap almost entirely (2.67 [2.39, 2.98] vs 2.55
@@ -317,6 +322,19 @@ bootstrap CIs; model-vs-model figures are paired differences.
   race-assortative `geo` edge structure. This is the project's mechanism
   result, and it is the thing a graph-level mitigation (FairDrop-style
   de-homophilizing) would target.
+- **The edge-swap control holds architecture fixed.** GraphSAGE on `temporal`
+  edges (assortativity 0.002) blind gives 0.36× [0.20, 0.54] against `geo`'s
+  1.48×, paired difference **+1.12 [+0.93, +1.36]** — same model, same
+  features, same training, only the wiring differs, so the GNN-vs-XGBoost
+  architecture confound is gone. `temporal` even lands *below* blind XGBoost
+  (−0.31 [−0.41, −0.22]), i.e. a non-assortative graph appears to dilute
+  group signal rather than merely not carry it; that one is an unexpected
+  observation, not a claim. Residual confound: `geo` and `temporal` differ in
+  block-size distribution and density too, so isolating homophily *alone*
+  needs the within-`geo` edge intervention — which is exactly what the
+  mitigation stage will be. Accuracy tracks the same axis: `geo` blind MCC
+  0.266 vs `temporal` blind 0.249, so the edge type that buys accuracy is the
+  one that buys race bias.
 - **Blinding costs ~0.02 MCC** for all three models (GraphSAGE 0.287→0.266,
   XGBoost 0.274→0.255, LogReg 0.233→0.215) and does **not** cost the GNN its
   accuracy lead (+0.013 sighted, +0.011 blind, against a GNN seed std of
