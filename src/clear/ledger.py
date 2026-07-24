@@ -15,7 +15,10 @@ import config as C
 
 LEDGER_PATH = C.OUTPUT_DIR / "metrics.csv"
 
-METRIC_COLS = ["auc", "mcc", "f1", "sensitivity", "specificity"]
+# clear.metrics.METRIC_NAMES와 동일 순서 유지. 뒤쪽 둘은 논문(Balanced Acc/
+# Precision) 대조용 부가 지표라 기존 다섯 뒤에 붙였다(기존 CSV 열 정렬 보존).
+METRIC_COLS = ["auc", "mcc", "f1", "sensitivity", "specificity",
+               "balanced_accuracy", "precision"]
 
 # 고정 스키마: 공통 앞부분 + GNN 전용 뒷부분(baseline 행에선 NaN).
 LEDGER_COLS = [

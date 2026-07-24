@@ -159,11 +159,23 @@ age binning, 70/30 random stratified split, 5-fold stratified CV. Deviating
 from these should be a conscious decision, since the baseline is meant to be
 paper-comparable on the data/split/encoding side.
 
-**Evaluation metrics are AUC/MCC/F1/Sensitivity/Specificity**, not the
-paper's Balanced Accuracy + Precision — a deliberate later deviation (not
-what the paper reports). There is now a single definition of this metric set,
-`clear.metrics.evaluate`, that both `05` and `06` call (it used to be
-copy-pasted into each and kept in sync by hand), so they can't drift apart.
+**Evaluation metrics are AUC/MCC/F1/Sensitivity/Specificity** (the project's
+own choice, a deliberate deviation from the paper) **plus Balanced Accuracy +
+Precision** — the latter two added later purely so our models can be compared
+to the literature (Campedelli 2022 reports *only* those two) on a shared axis;
+they are secondary reporting metrics, not selection criteria. There is now a
+single definition of this 7-metric set, `clear.metrics.evaluate`, that both
+`05` and `06` call (it used to be copy-pasted into each and kept in sync by
+hand), so they can't drift apart. The ledger schema (`clear.ledger`) carries
+all seven; `balanced_accuracy`/`precision` were appended *after* the original
+five so existing `outputs/metrics.csv` rows stay column-aligned, and historical
+rows were backfilled by exact algebra (BA = (Sens+Spec)/2, Precision =
+F1·Sens/(2·Sens−F1)) rather than re-running. On this CA+TX+MI sample our
+Balanced Accuracy (XGB ≈ 0.65) sits well below the paper's (national XGB 0.767,
+California 0.802) — expected, because the paper's top-2 SHAP predictors are
+unavailable here: `Circumstance` is absent from the Kaggle CSV, and
+`Number of Offenders` (= `Perpetrator Count`) is excluded as leakage. See
+`reports/모델벤치마크_선행연구비교.md` for the full comparison and analysis.
 MCC is the
 representative scalar for model selection (`GridSearchCV(scoring=
 "matthews_corrcoef")` in the baseline, validation-MCC early stopping in the
