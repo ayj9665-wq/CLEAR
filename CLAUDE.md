@@ -39,6 +39,9 @@ python ablation_sweep.py            # in-process one-factor-at-a-time sweep; mea
 python 07_fairness.py               # diagnoses EVERY outputs/predictions_*.csv found -> fairness_group_metrics.csv + fairness_gaps.csv
 python 07_fairness.py --models graphsage_geo xgboost   # restrict to specific dumps
 python 07_fairness.py --min_n 5000 --n_boot 2000       # stricter group floor / more bootstrap reps
+python 05_train_baseline.py --blind   # same, but with race/sex/ethnicity dummies dropped from X
+python 06_train_gnn.py --blind        # ditto (graph unchanged) -> predictions_graphsage_geo_blind.csv
+python edge_homophily.py              # -> outputs/edge_homophily.csv (are edges a sensitive-attribute proxy?)
 ```
 
 Scripts must run from `src/` and in this order — each stage reads the parquet
@@ -82,15 +85,19 @@ implemented, so the numbering is contiguous; the mitigation stage (week 3's
 dataset/kaggle_homicide_Reports_1980_2014.csv  (not in git, ~638k rows)
   -> 01_clean.py    target-encode; drop leakage + low-info columns; clean age
   -> 02_sample.py   filter to config.SAMPLE_STATES (default: California+Texas+Michigan)
-  -> 03_features.py 5-yr age bins, decade bins, full one-hot; splits off
-                     sens__Victim Race / sens__Victim Sex for later fairness work
-  -> eda.py / 05_train_baseline.py       (read features.parquet or sample.parquet)
+  -> 03_features.py 5-yr age bins, decade bins, full one-hot; *copies* race/sex
+                     off as sens__* for fairness work — the one-hot dummies of the
+                     same columns stay in X unless load_xy(blind=True)
+  -> eda.py / 05_train_baseline.py       (read features.parquet or sample.parquet;
+                                           05 -> outputs/predictions_{logreg,xgboost}[_blind].csv)
   -> 04_build_graph.py                   (reads sample.parquet + features.parquet ->
                                            data/processed/graph/edges_{geo,temporal,weapon}.npy)
   -> 06_train_gnn.py                     (reads features.parquet + edges_*.npy ->
-                                           outputs/predictions_graphsage_{edge}.csv)
-  -> 07_fairness.py                      (reads that prediction dump ->
-                                           outputs/fairness_group_metrics.csv)
+                                           outputs/predictions_graphsage_{edge}[_blind].csv)
+  -> 07_fairness.py                      (reads every prediction dump ->
+                                           outputs/fairness_{group_metrics,gaps,model_contrasts}.csv)
+     edge_homophily.py                   (reads edges_*.npy + sens__* ->
+                                           outputs/edge_homophily.csv)
 ```
 
 **Graph construction (`04_build_graph.py`) uses blocking, not literal
@@ -195,11 +202,24 @@ Sensitivity = recall on the positive (solved) class; Specificity =
 class — both via sklearn's `recall_score` rather than manual confusion-matrix
 arithmetic.
 
-**Sensitive attributes** (`Victim Race`, `Victim Sex`) are carried through
-`03_features.py` as `sens__*` columns *unencoded*, separate from the model
-input matrix `X` — they exist for the fairness diagnosis stage, not for
-training. `clear.data.load_xy()` (shared by `05`/`06`) explicitly strips them
-before fitting. `clear.data.load_sensitive()` is the other half of that pair:
+**Sensitive attributes are in the model input by default — `sens__*` is a
+diagnosis copy, not a removal.** `03_features.py` carries `Victim Race` and
+`Victim Sex` through as unencoded `sens__*` columns for the fairness stage,
+and `clear.data.load_xy()` strips those. But `config.CATEGORICAL_COLS`
+*also* lists `Victim Sex`/`Victim Race`/`Victim Ethnicity`, so the same
+attributes survive as one-hot dummies (`Victim Race=Black`, …) — 11 of `X`'s
+73 columns. Every result recorded before 2026-07-24 (baseline, GNN, and the
+first fairness diagnosis) therefore comes from models that saw race and sex
+**directly**; this doc previously claimed the opposite, and the claim was
+wrong. `load_xy(blind=True)` drops the dummies whose prefix is in
+`config.SENSITIVE_FEATURE_COLS`, and `05`/`06` expose it as `--blind`
+(ledger `tag="blind"`, dumps suffixed `_blind`), which is both the simplest
+mitigation (fairness through unawareness) and the only condition under which
+the graph-as-proxy question is answerable. `Victim Ethnicity` is included in
+that list even though it isn't one of the two diagnosed attributes, because
+Hispanic-origin is a direct race proxy and leaving it in would keep a
+non-graph path open. `clear.data.load_sensitive()` is the other half of the
+`sens__*` pair:
 it returns the same `sens__*` columns in the *same row order*, so the split
 indices from `get_split` `iloc` into it directly. That's what lets `06` dump
 test-node predictions joined to sensitive attributes
@@ -245,6 +265,29 @@ amplification CIs overlap almost entirely (2.67 [2.39, 2.98] vs 2.55
 `outputs/fairness_model_contrasts.csv`; read model comparisons **only** from
 there.
 
+**`edge_homophily.py` asks whether the edges themselves encode the sensitive
+attributes** — the mechanism question behind any GNN-vs-flat fairness gap,
+since message passing can carry a neighbour's race into a node's
+representation even when race is absent from `X`. It reports raw homophily,
+the null expectation under group-size-preserving rewiring (`sum_g p_g^2`), the
+normalized assortativity between them, and a direct "can neighbours recover
+this node's group by majority vote" accuracy. Normalizing matters: `geo`'s
+raw sex-homophily is 0.68, which looks high until you notice the null is
+0.675 (the sample is ~80% male). Measured at k=20: `weapon` is 1.000 on both
+attributes — expected, since `config.WEAPON_BLOCK_COLS` blocks *on* race and
+sex, which makes it a perfect proxy by construction and a standing warning
+against `--edge_type weapon`; `temporal` is ~0 on both (a useful null
+control); `geo` is race-assortative (0.174, neighbour-majority recovers race
++7.8pp over the majority baseline) but **not** sex-assortative (0.019, +0.0pp).
+Read against the sighted-model diagnosis alone this looks *backwards* — the
+significant GraphSAGE-over-XGBoost amplification was on *sex* (where geo
+carries no signal) and unresolvable on *race* (where it does). The confound
+is that race was in `X` all along (next note), so the graph's copy of it was
+redundant and invisible. `--blind` closes the direct path, and then the
+homophily measurement predicts the outcome correctly — see the blind-run
+findings below. Keep that ordering in mind before treating this table as a
+null result.
+
 **`05` and `06` both dump test predictions** (`clear.predictions`) joined to
 the unencoded sensitive attributes, so diagnosis reads CSVs and never
 re-instantiates a model — `07` re-runs in seconds against a GNN that took
@@ -255,6 +298,37 @@ fairness comparison the default rather than an extra step.
 `clear.predictions.assert_same_test_set` fails loudly if two dumps disagree on
 `row_index`, since a silently mismatched test set would still produce a
 plausible-looking comparison table.
+
+**The `--blind` runs settled where each disparity comes from, and the two
+sensitive attributes answer differently.** All figures below are
+demographic-parity amplification (model gap ÷ base-rate gap) with 95%
+bootstrap CIs; model-vs-model figures are paired differences.
+
+- **Sex is entirely the direct feature.** Blinding collapses every model from
+  2.55–3.29× to 0.88–0.96×, i.e. no amplification left. Consistent with geo
+  having no sex assortativity: there is no graph path to fall back on, so
+  deleting the column deletes the disparity.
+- **Race is partly carried by the graph.** On the White-vs-Black contrast
+  (`--min_n 5000`), sighted models are indistinguishable — GraphSAGE 2.19×
+  vs XGBoost 2.23×, paired difference −0.04 [−0.15, +0.08]. Blind, they
+  separate: LogReg 0.05×, XGBoost 0.67×, **GraphSAGE 1.48×**, paired
+  GraphSAGE−XGBoost **+0.82 [+0.65, +1.03]**. Once the direct path is closed,
+  the flat models stop amplifying and the GNN does not — the residual is the
+  race-assortative `geo` edge structure. This is the project's mechanism
+  result, and it is the thing a graph-level mitigation (FairDrop-style
+  de-homophilizing) would target.
+- **Blinding costs ~0.02 MCC** for all three models (GraphSAGE 0.287→0.266,
+  XGBoost 0.274→0.255, LogReg 0.233→0.215) and does **not** cost the GNN its
+  accuracy lead (+0.013 sighted, +0.011 blind, against a GNN seed std of
+  0.0005).
+
+Caveat to carry forward: `--min_n 5000` was chosen *after* seeing that the
+n≥1000 floor left this contrast borderline (+0.40 [−0.01, +0.86]). It is
+defensible — the White-vs-Black pair was flagged as the robust contrast in
+the very first diagnosis, both floors agree in direction, and the direction
+was predicted in advance by `edge_homophily.py` — but it is a post-hoc floor
+and all three floors stay in `outputs/fairness_gaps.csv` so the choice is
+visible rather than buried.
 
 `data/processed/` is gitignored, as are the raw CSV in `dataset/` (too large),
 `outputs/*.png`, and `outputs/predictions_*.csv` (a few MB each, regenerable by

@@ -61,6 +61,9 @@ def main():
     parser.add_argument("--patience", type=int, default=C.GNN_PATIENCE)
     parser.add_argument("--val_size", type=float, default=C.GNN_VAL_SIZE)
     parser.add_argument("--tag", default="", help="원장에서 구분할 자유 라벨")
+    parser.add_argument("--blind", action="store_true",
+                         help="민감속성 더미(config.SENSITIVE_FEATURE_COLS)를 X에서 제외. "
+                              "그래프는 그대로이므로 '그래프가 민감속성의 우회 경로인가'의 검정 조건이 된다.")
     parser.add_argument("--dump_predictions", action="store_true", default=True,
                          help="edge_type별 test 노드 예측을 outputs/predictions_graphsage_{edge}.csv로 저장(공정성 진단 07용)")
     parser.add_argument("--no_dump_predictions", dest="dump_predictions", action="store_false")
@@ -68,8 +71,9 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    X, y = load_xy()
-    print(f"[load] features {X.shape}, 검거율 {y.mean():.1%}, device={device}, seeds={args.seeds}")
+    X, y = load_xy(blind=args.blind)
+    print(f"[load] features {X.shape}, 검거율 {y.mean():.1%}, device={device}, seeds={args.seeds}"
+          + (f"  (blind: {C.SENSITIVE_FEATURE_COLS} 더미 제외)" if args.blind else ""))
 
     y_t, train_t, val_t, test_t = prepare(X, y, args.val_size, device)
     print(f"[split] train {len(train_t):,} / val {len(val_t):,} / test {len(test_t):,} "
@@ -83,11 +87,13 @@ def main():
     edge_types = ["geo", "temporal", "weapon"] if args.edge_type == "all" else [args.edge_type]
 
     test_idx = test_t.cpu().numpy()
+    suffix = "_blind" if args.blind else ""
+    tag = args.tag or suffix.lstrip("_")
     for edge_type in edge_types:
-        rows = train_eval(edge_type, args.k_neighbors, hp, args.seeds, args.tag,
+        rows = train_eval(edge_type, args.k_neighbors, hp, args.seeds, tag,
                           X, y_t, train_t, val_t, test_t, device, ledger=ledger)
         if args.dump_predictions:
-            pred_path = C.OUTPUT_DIR / f"predictions_graphsage_{edge_type}.csv"
+            pred_path = C.OUTPUT_DIR / f"predictions_graphsage_{edge_type}{suffix}.csv"
             dump_test_predictions(rows, test_idx, y, pred_path)
             print(f"[save] {pred_path} (test 노드 {len(test_idx):,}개, seed 평균 proba)")
     print(f"[save] {ledger.LEDGER_PATH} (append, {len(edge_types)}×{len(args.seeds)}행)")

@@ -200,15 +200,19 @@ def diagnose(dumps, attr, *, min_n=None, n_boot=None, seed=None):
     """여러 예측 덤프를 한 민감속성에 대해 동시 진단.
 
     dumps: {라벨: DataFrame} (같은 test 행 순서). 반환 (그룹표, 격차표, 모델대조표).
-    격차는 항상 두 벌 낸다: 명명된 전체 그룹, 그리고 n>=min_n 그룹만. 후자가
-    소수그룹 잡음에 덜 휘둘리는 쪽이라, 둘을 나란히 보고해야 헤드라인 수치가
-    어디서 왔는지 독자가 판단할 수 있다.
+    격차는 명명된 전체 그룹 + min_n(정수 또는 정수 리스트)마다 한 벌씩 낸다.
+    표본 하한을 올릴수록 소수그룹 잡음에 덜 휘둘리므로, 여러 기준을 **한 파일에
+    나란히** 남겨야 헤드라인 수치가 어느 기준에서 나왔는지 독자가 판단할 수 있다
+    (기준을 하나만 내면 사후에 유리한 기준을 고른 것처럼 보인다).
 
     모델대조표는 모델 쌍의 격차·증폭비 **차이**를 짝지은 복제본에서 계산한 것이다.
     "그래프가 flat 모델보다 격차를 더 키우는가"는 이 표로만 답할 수 있다 —
     개별 모델 CI의 겹침 여부로 읽으면 안 된다.
     """
-    min_n = C.FAIRNESS_MIN_GROUP_N if min_n is None else min_n
+    if min_n is None:
+        min_n = [C.FAIRNESS_MIN_GROUP_N]
+    elif isinstance(min_n, (int, np.integer)):
+        min_n = [int(min_n)]
     jc, labels = joint_counts(dumps, attr)
     jb = bootstrap_joint(jc, n_boot=n_boot, seed=seed)
     M = len(labels)
@@ -219,8 +223,8 @@ def diagnose(dumps, attr, *, min_n=None, n_boot=None, seed=None):
             for m, lab in enumerate(labels)}
 
     ref_counts = counts[labels[0]]     # 그룹 n은 모델과 무관
-    group_sets = [("named_all", select_groups(ref_counts)),
-                  (f"named_n>={min_n}", select_groups(ref_counts, min_n))]
+    group_sets = [("named_all", select_groups(ref_counts))]
+    group_sets += [(f"named_n>={m}", select_groups(ref_counts, m)) for m in sorted(min_n)]
 
     tables, gaps, samples = [], [], {}
     for lab in labels:

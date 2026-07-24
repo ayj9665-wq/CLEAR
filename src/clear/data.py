@@ -25,17 +25,31 @@ import config as C
 Split = namedtuple("Split", ["train", "val", "test", "trainval"])
 
 
-def load_xy():
+def load_xy(blind=False):
     """features.parquet → (X, y).
 
-    민감속성(sens__*)과 타깃은 X에서 제외한다(민감속성은 공정성 진단 단계용,
-    학습 입력 아님). bool 더미는 int8로 캐스팅한다 — XGBoost 입력을 정리하고,
-    GNN은 이후 float32로 변환하므로 무손실이다.
+    타깃과 sens__* 열은 X에서 뺀다. **주의**: sens__*를 뺀다고 모델이 민감속성을
+    못 보는 게 아니다 — 03_features.py가 CATEGORICAL_COLS(Victim Race/Sex 포함)를
+    전면 원핫하므로 'Victim Race=Black' 같은 더미가 X에 그대로 남는다. sens__*는
+    진단용 **사본**(원본 라벨)이지 유일한 경로가 아니다. 기본값 blind=False는 이
+    상태 그대로이고(= 지금까지의 모든 실험 조건), blind=True가
+    config.SENSITIVE_FEATURE_COLS 접두어의 더미를 마저 떼어낸다.
+
+    blind=True는 두 몫을 한다: (1) 가장 단순한 완화기법(fairness through
+    unawareness), (2) "그래프가 민감속성의 우회 경로인가"의 검정 조건 — 직접
+    경로를 막아야 그래프 경로만 남아 분리 측정이 된다.
+
+    bool 더미는 int8로 캐스팅한다 — XGBoost 입력을 정리하고, GNN은 이후
+    float32로 변환하므로 무손실이다.
     """
     df = pd.read_parquet(C.PROCESSED_DIR / "features.parquet")
     sens_cols = [c for c in df.columns if c.startswith("sens__")]
     y = df[C.TARGET_BIN].values
     X = df.drop(columns=[C.TARGET_BIN] + sens_cols)
+    if blind:
+        drop = [c for c in X.columns
+                if any(c.startswith(f"{p}=") for p in C.SENSITIVE_FEATURE_COLS)]
+        X = X.drop(columns=drop)
     X = X.astype({c: "int8" for c in X.columns if X[c].dtype == bool})
     return X, y
 

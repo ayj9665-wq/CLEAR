@@ -29,6 +29,7 @@ baseline은 결정적(고정 split·고정 random_state)이라 모델당 1행이
 seed 반복을 하지 않는 이유: seed로 split을 바꾸면 test 집합이 달라져 06과의
 비교 가능성이 깨진다. 그래서 baseline은 고정 test 위의 단일 기준점으로 남긴다.
 """
+import argparse
 from datetime import datetime
 
 import pandas as pd
@@ -43,7 +44,7 @@ from clear.metrics import evaluate as compute_metrics
 from clear import ledger, predictions
 
 
-def evaluate(name, model, X_te, y_te, seed, rows):
+def evaluate(name, model, X_te, y_te, seed, rows, tag=""):
     """지표는 clear.metrics(06과 공통)로 계산하고, baseline 특유의
     혼동행렬·classification_report 진단만 여기서 추가로 출력한다.
     원장 스키마에 맞춰 timestamp/model/tag/seed를 단 행을 rows에 담는다."""
@@ -58,14 +59,21 @@ def evaluate(name, model, X_te, y_te, seed, rows):
     print(classification_report(y_te, pred, target_names=["미해결", "검거"]))
     rows.append({
         "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "model": name, "tag": "", "seed": seed, **metric_vals,
+        "model": name, "tag": tag, "seed": seed, **metric_vals,
     })
     return proba   # 호출부에서 예측 덤프(07 공정성 진단 입력)로 쓴다
 
 
 def main():
-    X, y = load_xy()
-    print(f"[data] X {X.shape}, 검거율 {y.mean():.1%}")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--blind", action="store_true",
+                    help="민감속성 더미(config.SENSITIVE_FEATURE_COLS)를 X에서 제외")
+    args = ap.parse_args()
+    suffix = "_blind" if args.blind else ""
+
+    X, y = load_xy(blind=args.blind)
+    print(f"[data] X {X.shape}, 검거율 {y.mean():.1%}"
+          + (f"  (blind: {C.SENSITIVE_FEATURE_COLS} 더미 제외)" if args.blind else ""))
 
     # get_split의 trainval(=예전 train_test_split의 train쪽, 순서 보존)로
     # 학습, test는 06_train_gnn.py와 동일 집합. CV는 이 trainval 안에서 돈다.
@@ -84,7 +92,7 @@ def main():
     # 1) 로지스틱 회귀 베이스라인
     logit = LogisticRegression(max_iter=1000, class_weight="balanced")
     logit.fit(X_tr, y_tr)
-    proba_logit = evaluate("logreg", logit, X_te, y_te, seed, rows)
+    proba_logit = evaluate("logreg", logit, X_te, y_te, seed, rows, tag=suffix.lstrip("_"))
 
     # 2) XGBoost + 5-fold CV 소규모 튜닝
     cv = StratifiedKFold(n_splits=C.CV_FOLDS, shuffle=True, random_state=C.RANDOM_STATE)
@@ -98,7 +106,8 @@ def main():
     gs.fit(X_tr, y_tr)
     print(f"\n[XGB best params] {gs.best_params_}")
     print(f"[XGB CV best MCC] {gs.best_score_:.4f}")
-    proba_xgb = evaluate("xgboost", gs.best_estimator_, X_te, y_te, seed, rows)
+    proba_xgb = evaluate("xgboost", gs.best_estimator_, X_te, y_te, seed, rows,
+                         tag=suffix.lstrip("_"))
 
     # 저장: 지표 → 06과 공통 원장(outputs/metrics.csv)에 append
     for r in rows:
@@ -107,13 +116,13 @@ def main():
 
     # 저장: test 예측 덤프 → 07_fairness.py 입력(06과 동일 형식·동일 test 집합)
     for name, proba in [("logreg", proba_logit), ("xgboost", proba_xgb)]:
-        p, _ = predictions.dump(predictions.path_for(name), split.test, y, proba)
+        p, _ = predictions.dump(predictions.path_for(name + suffix), split.test, y, proba)
         print(f"[save] {p} (test {len(split.test):,}행)")
 
     # 저장: XGB 특성 중요도 top 25
     imp = pd.Series(gs.best_estimator_.feature_importances_, index=X.columns)
     imp = imp.sort_values(ascending=False).head(25)
-    out_i = C.OUTPUT_DIR / "baseline_xgb_top_features.csv"
+    out_i = C.OUTPUT_DIR / f"baseline_xgb_top_features{suffix}.csv"
     imp.to_csv(out_i, header=["importance"], encoding="utf-8-sig")
     print(f"[save] {out_i}")
     print("\n[XGB 상위 특성]\n", imp.head(10))

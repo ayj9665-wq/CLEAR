@@ -55,6 +55,18 @@ DROP_COLS = [
 # ---- 민감속성(공정성 진단용) ----
 SENSITIVE_COLS = ["Victim Race", "Victim Sex"]
 
+# ---- blind 실험에서 X에서 뺄 민감속성 더미 열 ----
+# 주의: 03_features.py는 CATEGORICAL_COLS를 전면 원핫하고 그 목록에 Victim
+# Race/Sex가 들어 있다. 즉 민감속성은 sens__ 사본과 **별개로** 'Victim Race=Black'
+# 같은 더미 열로 X에 남아 있고, load_xy()는 sens__ 사본만 뗀다 — 기본 설정의 세
+# 모델은 전부 인종·성별을 직접 보고 학습한다. load_xy(blind=True)가 이 접두어로
+# 시작하는 더미를 마저 뺀다.
+#
+# Victim Ethnicity를 포함하는 이유: Hispanic 여부는 인종의 강한 직접 프록시라,
+# 남겨두면 "모델이 인종을 못 본다"는 blind 조건이 성립하지 않는다. 그래프가
+# 인종 정보의 우회 경로인지 검정하려면 그래프 아닌 경로를 다 막아야 한다.
+SENSITIVE_FEATURE_COLS = ["Victim Race", "Victim Sex", "Victim Ethnicity"]
+
 # ---- 표본 추출: 논문(Campedelli 2022) 주(州)별 분할 전략 ----
 # 논문이 실제로 분석한 3개 주(California·Texas·Michigan) 조합.
 # 전국 풀링 대신 이 조합을 쓰는 이유: 주별 검거율 편차가 커서(예: SC 90.8% vs

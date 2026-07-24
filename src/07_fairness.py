@@ -47,8 +47,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--models", nargs="*", default=None,
                     help="진단할 덤프 라벨(예: graphsage_geo xgboost). 생략 시 찾은 전부.")
-    ap.add_argument("--min_n", type=int, default=C.FAIRNESS_MIN_GROUP_N,
-                    help="두 번째 격차 집합의 최소 그룹 표본수")
+    ap.add_argument("--min_n", type=int, nargs="+", default=[C.FAIRNESS_MIN_GROUP_N],
+                    help="격차를 낼 최소 그룹 표본수(여러 개 가능: --min_n 1000 5000). "
+                         "명명된 전체 그룹 집합은 항상 함께 낸다.")
     ap.add_argument("--n_boot", type=int, default=C.FAIRNESS_BOOTSTRAP_N,
                     help="부트스트랩 반복수(0이면 CI 없이 점추정만)")
     args = ap.parse_args()
@@ -114,9 +115,9 @@ def main():
         pd.concat(frames, ignore_index=True).to_csv(p, index=False, encoding="utf-8-sig")
         print(f"[save] {p}")
     print("[해석] 증폭비 > 1 이면 모델이 데이터에 이미 있던 격차를 키운 것. "
-          f"named_all과 named_n>={args.min_n}이 크게 다르면 헤드라인 격차가 소수 "
-          "그룹에서 나온 것이다. 모델 비교는 개별 CI 겹침이 아니라 대조표의 "
-          "짝지은 차이로 읽을 것.")
+          f"기준별(named_all / {' / '.join(f'named_n>={m}' for m in sorted(args.min_n))}) "
+          "값이 크게 다르면 헤드라인 격차가 소수 그룹에서 나온 것이다. 모델 비교는 "
+          "개별 CI 겹침이 아니라 대조표의 짝지은 차이로 읽을 것.")
 
 
 if __name__ == "__main__":
