@@ -68,9 +68,35 @@ def prepare(X, y, val_size, device):
     return y_t, train_t, val_t, test_t
 
 
+def fairness_penalty(proba, codes):
+    """그룹 평균 예측확률의 (크기가중) 분산 — Demographic Parity의 미분가능 대리항.
+
+    codes: 노드별 그룹 인덱스, -1은 벌점에서 제외(Unknown 등). 그룹이 둘이면
+    이 값은 두 그룹 평균 차이의 제곱에 비례하므로, "선택률 격차를 줄여라"를
+    그대로 손실에 넣은 것이 된다. 하드 예측(임계값)은 미분이 안 되므로 시그모이드
+    확률의 평균을 쓴다 — 07이 재는 selection_rate의 매끄러운 대리값이다.
+
+    벌점은 **학습 노드에서만** 계산한다(호출부가 train 인덱스를 넘긴다). 민감속성이
+    학습 시점에만 필요하고 추론 시점엔 불필요하다는 게 이 방식의 요점이다 —
+    후처리(08)가 배포 시 인종을 알아야 하는 제약을 피한다.
+    """
+    keep = codes >= 0
+    if not torch.any(keep):
+        return proba.sum() * 0.0
+    p, c = proba[keep], codes[keep]
+    overall = p.mean()
+    pen = proba.sum() * 0.0
+    for g in torch.unique(c):
+        m = c == g
+        w = m.sum().to(p.dtype) / c.numel()
+        pen = pen + w * (p[m].mean() - overall) ** 2
+    return pen
+
+
 def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neighbors,
               hidden_dim, num_layers, dropout, lr, weight_decay, aggr,
-              max_epochs, patience, val_size, tag, device):
+              max_epochs, patience, val_size, tag, device,
+              fair_alpha=0.0, fair_codes=None):
     torch.manual_seed(seed)
     model = GraphSAGE(data.x.shape[1], hidden_dim, num_layers, dropout, aggr).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -90,6 +116,9 @@ def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neigh
         optimizer.zero_grad()
         out = model(data.x, data.edge_index).squeeze(-1)
         loss = criterion(out[train_idx], y[train_idx])
+        if fair_alpha > 0 and fair_codes is not None:
+            loss = loss + fair_alpha * fairness_penalty(
+                torch.sigmoid(out[train_idx]), fair_codes[train_idx])
         loss.backward()
         optimizer.step()
 
@@ -137,6 +166,7 @@ def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neigh
         "hidden_dim": hidden_dim, "num_layers": num_layers, "dropout": dropout,
         "lr": lr, "weight_decay": weight_decay, "aggr": aggr,
         "max_epochs": max_epochs, "patience": patience, "val_size": val_size,
+        "fair_alpha": fair_alpha,
         "best_epoch": best_epoch, "train_seconds": round(train_seconds, 1),
         "n_params": sum(p.numel() for p in model.parameters()),
         **metric_vals,

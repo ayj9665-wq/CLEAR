@@ -27,6 +27,8 @@ LEDGER_COLS = [
     "edge_type", "k_neighbors", "hidden_dim", "num_layers", "dropout",
     "lr", "weight_decay", "aggr", "max_epochs", "patience", "val_size",
     "best_epoch", "train_seconds", "n_params",
+    # 완화 실험(10_fairloss.py)의 손실 벌점 세기. 이전 행에서는 비어 있다.
+    "fair_alpha",
 ]
 
 

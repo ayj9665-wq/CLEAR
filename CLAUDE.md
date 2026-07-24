@@ -44,6 +44,9 @@ python 06_train_gnn.py --blind        # ditto (graph unchanged) -> predictions_g
 python edge_homophily.py              # -> outputs/edge_homophily.csv (are edges a sensitive-attribute proxy?)
 python 08_mitigate.py                 # -> outputs/mitigation_tradeoff.csv (group-wise threshold sweep, every dump)
 python 08_mitigate.py --criteria tpr --steps 21 --min_n 1000   # equalize TPR instead, finer grid, looser group floor
+python 09_fairgraph.py                # -> outputs/fairgraph_tradeoff.csv (drop same-race edges + matched random control)
+python 10_fairloss.py                 # -> outputs/fairloss_tradeoff.csv (fairness penalty in the training loss)
+python 10_fairloss.py --alphas 0 25 50 75 --seeds 42,43,44,45  # finer alpha grid near the useful range
 ```
 
 Scripts must run from `src/` and in this order — each stage reads the parquet
@@ -289,8 +292,78 @@ repayable and its accuracy edge survives repayment. It is cheap because the
 disparity sits in a narrow band at the boundary: even at λ=1 the thresholds move
 only ±0.03. Two things to keep attached to that result — demographic parity is a
 value choice here (the groups' *actual* clearance rates really do differ, 70.2%
-vs 65.5%), and post-processing needs the sensitive attribute **at decision time**,
-which is exactly the constraint an edge-level mitigation would avoid.
+vs 65.5%), and post-processing needs the sensitive attribute **at decision time**, which
+an edge-level mitigation *may* avoid depending on the variant: permanently
+rewiring the graph still needs race to place a new case's edges, so only the
+"drop during training, infer on the full graph" variant actually escapes the
+constraint. `09_fairgraph.py` does the permanent-rewiring form, because that is
+the one that doubles as the mechanism test.
+
+**`10_fairloss.py` is the mitigation that works, and it exists because `09`
+failed.** Instead of deleting the sensitive information from the input, it stops
+the model *using* it: `loss = BCE + alpha * (size-weighted variance of per-group
+mean predicted probability)`, computed on training nodes only
+(`clear.gnn.fairness_penalty`). With two groups that reduces to the squared
+selection-rate gap, i.e. the diagnosis' own quantity written into the loss; the
+sigmoid mean stands in for the non-differentiable hard rate. It sidesteps `09`'s
+failure mode because it never has to locate the leak — edge, block, or feature,
+the penalty presses on the *output*. And it needs race **only at training time**,
+which is the one practical objection to the post-processing route.
+
+Blind geo, White-vs-Black, 3 seeds: amplification 1.37 → **0.06 [0.00, 0.24]** at
+alpha=50, for 0.0044 MCC. Comparable in cost to post-processing (−0.0025) with
+no decision-time attribute requirement — compare the two on *relative* cost, since
+`08` scores on the eval half and `10` on the whole test set.
+
+**The curve inverts above alpha≈50** (amplification 0.06 → 0.19 at 200 → 0.52 at
+1000) and that is a real defect, not noise: early stopping selects on validation
+**MCC**, which knows nothing about the penalty, so at large alpha model selection
+actively fights the objective. Read this sweep as a trade-off curve only for
+alpha ≲ 50. The fix — early-stop on something like `val MCC − beta·val gap` — is
+not implemented.
+
+**`09_fairgraph.py` attacks the diagnosed cause instead of the symptom**
+(`clear.fairgraph`): it drops same-race `geo` edges with probability p and
+retrains, so message passing carries less race information. It only means
+anything in the `--blind` condition (the default here) — with race still in `X`
+the model reads it directly and any edge intervention is masked.
+
+**The random-drop control arm is what makes it a test rather than a demo.**
+Removing homophilous edges also removes *edges*, so a shrinking gap could just
+be graph thinning. Every p therefore runs twice: `homophily` drops same-race
+pairs at rate p, and `random` keeps a **matched count** chosen without regard to
+race. At p=1 both arms hold 1,601,328 pairs while homophily is 0.000 vs 0.576 —
+identical density, isolated attribute. The conclusion only stands if the gap
+falls in the homophily arm and not in the random arm. The random arm doubles as
+a noise floor: since its homophily is constant across p, whatever it does across
+p is sparsification plus training stochasticity.
+
+That stochasticity is worth watching. Bootstrap CIs cover test-set sampling
+only, **not** GNN training randomness, and amplification is a
+threshold-dependent quantity — the same blind geo config scored 1.48, 1.33 and
+1.37 on three separate runs. Judge effects against the control arm's spread, not
+against the CI alone.
+
+**The result: it does not work, and why is the interesting part.** Differences
+between arms (−0.07 to −0.16 at p=0.25–0.75) sit inside that ±0.15 training
+spread. At p=1 it clearly *backfires* (homophily arm 1.74 vs control 1.11) for
+two measurable reasons: homophily 0 is not neutral but the opposite extreme
+(assortativity −0.949 against a null of 0.487, so race stays perfectly
+recoverable with the sign flipped — the race-independent point is p≈0.30), and
+node isolation becomes race-correlated (2.84% of White victims lose every
+neighbour vs 0.03% of Black ones, making "has no neighbours" a race signal).
+Even at the principled p≈0.30 the amplification stays ~1.25 rather than dropping
+toward `temporal`'s 0.36. **So the residual is not edge-level homophily — it is
+block membership.** Aggregating over city-mates transmits "which city", and city
+correlates with race, no matter how the edges inside the block are paired.
+That revises the §5-5 reading: `temporal` scored low not because it is
+non-assortative but because it does not block on geography. Rewiring inside a
+block cannot delete the block, which is what sent the mitigation effort to
+`10_fairloss.py`.
+
+Edges are stored symmetrized, so `clear.fairgraph` folds to undirected pairs
+(`src < dst`), drops there, and re-symmetrizes; dropping one direction only
+would silently make message passing asymmetric.
 
 **`edge_homophily.py` asks whether the edges themselves encode the sensitive
 attributes** — the mechanism question behind any GNN-vs-flat fairness gap,
