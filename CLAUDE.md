@@ -334,6 +334,19 @@ the residual is optimisation instability rather than selection: MCC's seed std
 jumps 0.0029 → 0.0178 at alpha=1000 as the penalty swamps the BCE term. So the
 sweep stays a trade-off curve only for **alpha ≲ 50**, whatever beta is.
 
+**The two mitigations differ in kind, which only the paper-comparison metrics
+reveal.** Post-processing moves group thresholds in *opposite* directions
+(White 0.500→0.517, Black 0.500→0.470), so the global operating point cancels
+out: Sens/Spec/Precision barely move (Precision −0.0003, and XGBoost's actually
+rises). The loss penalty instead shifts the operating point globally —
+sensitivity up, specificity down (0.648→0.673, 0.636→0.605) — so it predicts
+"solved" more often and pays an order of magnitude more Precision (−0.0075
+against post-processing's −0.0003).
+Both are small in absolute terms, but if precision matters for the use case,
+post-processing is the better instrument; if decision-time attribute use is
+blocked, the penalty is. Neither dominates. MCC alone hides this, which is one
+concrete payoff of having kept Balanced Accuracy and Precision around.
+
 Two things fell out of that experiment. Fairness-aware early stopping is a
 mitigation **on its own** — at alpha=0, beta=1 alone takes amplification 1.37 →
 0.91 for 0.0075 MCC, just by choosing a different checkpoint. And the best
