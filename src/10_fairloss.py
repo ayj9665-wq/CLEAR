@@ -48,6 +48,10 @@ def main():
     ap.add_argument("--alphas", type=float, nargs="+",
                     default=[0.0, 10.0, 50.0, 200.0, 1000.0],
                     help="손실 벌점 세기 격자")
+    ap.add_argument("--beta", type=float, default=0.0,
+                    help="조기 종료 기준을 'val MCC - beta * val 선택률격차'로 바꾼다. "
+                         "0이면 예전처럼 val MCC만 본다. alpha가 클 때 손실과 모델 선택이 "
+                         "서로 싸우는 문제(곡선 뒤집힘)를 겨냥한 것.")
     ap.add_argument("--seeds", default=None)
     ap.add_argument("--min_n", type=int, default=5000,
                     help="벌점·격차 대상 그룹의 최소 표본수(기본 5000 = 인종은 White/Black)")
@@ -86,13 +90,15 @@ def main():
 
     rows = []
     for alpha in args.alphas:
-        tag = f"fairloss_a{alpha:g}" + ("" if blind else "_sighted")
+        tag = (f"fairloss_a{alpha:g}" + (f"_b{args.beta:g}" if args.beta else "")
+               + ("" if blind else "_sighted"))
         print(f"\n=== {tag} ===")
         seed_rows = []
         for seed in seeds:
             r = gnn.train_one(args.edge_type, data, y_t, train_t, val_t, test_t,
                               seed=seed, k_neighbors=args.k_neighbors, tag=tag,
-                              device=device, fair_alpha=alpha, fair_codes=fair_codes, **hp)
+                              device=device, fair_alpha=alpha, fair_codes=fair_codes,
+                              fair_beta=args.beta, **hp)
             ledger.append(r)
             seed_rows.append(r)
 
@@ -110,7 +116,10 @@ def main():
                ["auc", "mcc", "f1", "sensitivity", "specificity",
                 "balanced_accuracy", "precision"]}
         rows.append({
-            "tag": tag, "alpha": alpha, "blind": blind, "attribute": args.attr,
+            "tag": tag, "alpha": alpha, "beta": args.beta,
+            "blind": blind, "attribute": args.attr,
+            "best_val_gap": float(np.mean([r["best_val_gap"] for r in seed_rows]))
+            if args.beta else np.nan,
             **{f"acc_{k}": v for k, v in acc.items()},
             "acc_mcc_std": float(np.std([r["mcc"] for r in seed_rows], ddof=1))
             if len(seeds) > 1 else np.nan,
@@ -127,9 +136,20 @@ def main():
 
     out = pd.DataFrame(rows)
     path = C.OUTPUT_DIR / "fairloss_tradeoff.csv"
+    # beta별 곡선을 한 파일에 모은다(같은 축에 겹쳐 그려야 비교가 된다). 같은
+    # (alpha, beta, blind) 조합은 최신 실행으로 교체 — 덮어쓰면 이전 beta 곡선이,
+    # 그냥 append하면 재실행분이 중복으로 남는다.
+    if path.exists():
+        old = pd.read_csv(path)
+        if {"alpha", "beta", "blind"} <= set(old.columns):
+            key = ["alpha", "beta", "blind"]
+            merged = pd.MultiIndex.from_frame(out[key])
+            old = old[~pd.MultiIndex.from_frame(old[key]).isin(merged)]
+            out = pd.concat([old, out], ignore_index=True)
+    out = out.sort_values(["blind", "beta", "alpha"]).reset_index(drop=True)
     out.to_csv(path, index=False, encoding="utf-8-sig")
-    print(f"\n[save] {path}")
-    print(out[["alpha", "acc_mcc", "acc_mcc_std", "dp_gap", "dp_amplification"]]
+    print(f"\n[save] {path} (누적 {len(out)}행)")
+    print(out[["alpha", "beta", "acc_mcc", "acc_mcc_std", "dp_gap", "dp_amplification"]]
           .round(4).to_string(index=False))
     print("\n[해석] alpha를 키우면 격차는 줄고 정확도는 떨어져야 한다. 08(후처리) 곡선과 "
           "같은 축에 겹쳐 '같은 공정성 수준에서 어느 쪽이 정확한가'를 본다. 이 방식은 "

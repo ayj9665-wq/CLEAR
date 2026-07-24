@@ -46,6 +46,7 @@ python 08_mitigate.py                 # -> outputs/mitigation_tradeoff.csv (grou
 python 08_mitigate.py --criteria tpr --steps 21 --min_n 1000   # equalize TPR instead, finer grid, looser group floor
 python 09_fairgraph.py                # -> outputs/fairgraph_tradeoff.csv (drop same-race edges + matched random control)
 python 10_fairloss.py                 # -> outputs/fairloss_tradeoff.csv (fairness penalty in the training loss)
+python 10_fairloss.py --beta 1.0       # early-stop on val MCC - beta*val gap instead of val MCC alone
 python 10_fairloss.py --alphas 0 25 50 75 --seeds 42,43,44,45  # finer alpha grid near the useful range
 ```
 
@@ -75,16 +76,22 @@ definition), `clear.graph` (edge loading + `geo_temporal`-style unions),
 `clear.gnn` (the GraphSAGE model + training loop), `clear.ledger` (the shared
 `outputs/metrics.csv` log), `clear.predictions` (the test-prediction dump
 format that hands off from training to diagnosis), `clear.fairness` (group
-metrics, gaps, bootstrap CIs). The numbered scripts (`05`, `06`, `07`) and the
-unnumbered `ablation_sweep.py` are thin CLIs over `clear/`; `config.py` still
+metrics, gaps, bootstrap CIs), `clear.mitigate` (group-wise thresholds),
+`clear.fairgraph` (homophilous-edge dropping). The numbered scripts (`05`–`10`)
+and the unnumbered `ablation_sweep.py`/`edge_homophily.py` are thin CLIs over
+`clear/`; `config.py` still
 holds all paths/constants. This replaced an earlier state where `load_xy`,
 the metric block, and the split were copy-pasted across `05`/`06` and kept in
 sync by hand. `05_train_baseline.py` was built before
 `04_build_graph.py`/`06_train_gnn.py` despite the lower number: it's the
 pre-graph performance floor (flat XGBoost/LogReg) the GNN has to beat, so it
-needed to exist first. `07_fairness.py` (fairness diagnosis, week 3) is now
-implemented, so the numbering is contiguous; the mitigation stage (week 3's
-"prescribe" half) has no script yet.
+needed to exist first. Numbering is now contiguous through `10`: `07` diagnoses,
+and the prescribe stage is three scripts because the first two answers were
+incomplete — `08` post-processes thresholds (works, but needs the attribute at
+decision time), `09` rewires edges (**fails**, and the failure is what located
+the real leak), `10` penalises the gap in the training loss (works, no
+decision-time attribute). Read them in that order; each exists because of what
+the previous one could not do.
 
 ```
 dataset/kaggle_homicide_Reports_1980_2014.csv  (not in git, ~638k rows)
@@ -103,6 +110,9 @@ dataset/kaggle_homicide_Reports_1980_2014.csv  (not in git, ~638k rows)
                                            outputs/fairness_{group_metrics,gaps,model_contrasts}.csv)
      edge_homophily.py                   (reads edges_*.npy + sens__* ->
                                            outputs/edge_homophily.csv)
+  -> 08_mitigate.py                      (reads every dump -> outputs/mitigation_tradeoff.csv)
+     09_fairgraph.py                     (edges + sens__* -> retrains -> fairgraph_tradeoff.csv)
+     10_fairloss.py                      (penalty in the loss -> fairloss_tradeoff.csv)
 ```
 
 **Graph construction (`04_build_graph.py`) uses blocking, not literal
@@ -316,11 +326,22 @@ no decision-time attribute requirement — compare the two on *relative* cost, s
 `08` scores on the eval half and `10` on the whole test set.
 
 **The curve inverts above alpha≈50** (amplification 0.06 → 0.19 at 200 → 0.52 at
-1000) and that is a real defect, not noise: early stopping selects on validation
-**MCC**, which knows nothing about the penalty, so at large alpha model selection
-actively fights the objective. Read this sweep as a trade-off curve only for
-alpha ≲ 50. The fix — early-stop on something like `val MCC − beta·val gap` — is
-not implemented.
+1000). The first suspicion was model selection: early stopping picks on
+validation **MCC**, which knows nothing about the penalty. `--beta` tests that by
+selecting on `val MCC − beta·val gap` instead. It is **half the story** — beta=1
+softens the inversion (0.52 → 0.31 at alpha=1000) but does not remove it, and
+the residual is optimisation instability rather than selection: MCC's seed std
+jumps 0.0029 → 0.0178 at alpha=1000 as the penalty swamps the BCE term. So the
+sweep stays a trade-off curve only for **alpha ≲ 50**, whatever beta is.
+
+Two things fell out of that experiment. Fairness-aware early stopping is a
+mitigation **on its own** — at alpha=0, beta=1 alone takes amplification 1.37 →
+0.91 for 0.0075 MCC, just by choosing a different checkpoint. And the best
+accuracy of any mitigated config is beta=1, alpha=50 (MCC 0.2645, amplification
+0.101), which beats beta=0, alpha=50 on accuracy while giving up some fairness
+(0.058). Pick per what the frontier point needs to be; both are in
+`outputs/fairloss_tradeoff.csv`, which merges on `(alpha, beta, blind)` so
+re-running one beta neither overwrites the other curve nor duplicates rows.
 
 **`09_fairgraph.py` attacks the diagnosed cause instead of the symptom**
 (`clear.fairgraph`): it drops same-race `geo` edges with probability p and

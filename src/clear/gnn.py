@@ -68,6 +68,19 @@ def prepare(X, y, val_size, device):
     return y_t, train_t, val_t, test_t
 
 
+def _group_gap(pred, codes_np):
+    """val 노드의 그룹 간 선택률 max-min. codes_np가 None이면 nan(계산 안 함).
+
+    07이 재는 selection_rate 격차와 같은 정의를, 조기 종료가 쓸 수 있게 val에서
+    계산한 것이다. -1(대상 외)은 제외한다.
+    """
+    if codes_np is None:
+        return np.nan
+    rates = [pred[codes_np == g].mean() for g in np.unique(codes_np) if g >= 0
+             and (codes_np == g).any()]
+    return float(max(rates) - min(rates)) if len(rates) >= 2 else 0.0
+
+
 def fairness_penalty(proba, codes):
     """그룹 평균 예측확률의 (크기가중) 분산 — Demographic Parity의 미분가능 대리항.
 
@@ -96,7 +109,7 @@ def fairness_penalty(proba, codes):
 def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neighbors,
               hidden_dim, num_layers, dropout, lr, weight_decay, aggr,
               max_epochs, patience, val_size, tag, device,
-              fair_alpha=0.0, fair_codes=None):
+              fair_alpha=0.0, fair_codes=None, fair_beta=0.0):
     torch.manual_seed(seed)
     model = GraphSAGE(data.x.shape[1], hidden_dim, num_layers, dropout, aggr).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -107,7 +120,15 @@ def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neigh
     pos_weight = torch.tensor([neg / max(pos, 1)], device=device)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
-    best_val_mcc, best_epoch, best_state, no_improve = -1.0, 0, None, 0
+    # 조기 종료 스칼라. fair_beta=0이면 예전처럼 val MCC만 본다.
+    # fair_beta>0이면 val MCC - beta * (val 선택률 격차)로 고른다 — 손실에 공정성
+    # 벌점을 걸어놓고 모델 선택은 MCC만 보면 alpha가 클 때 둘이 서로 싸운다
+    # (실제로 alpha>=200에서 곡선이 뒤집혔다). 선택 기준을 목표와 맞추는 것이다.
+    val_codes_np = (fair_codes[val_idx].cpu().numpy()
+                    if (fair_beta > 0 and fair_codes is not None) else None)
+
+    best_score, best_val_mcc, best_gap = -np.inf, -1.0, np.nan
+    best_epoch, best_state, no_improve = 0, None, 0
     t0 = time.time()
     epoch = 0
 
@@ -129,9 +150,12 @@ def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neigh
             val_pred = (val_proba >= 0.5).astype(int)
             val_mcc = matthews_corrcoef(y[val_idx].cpu().numpy().astype(int), val_pred)
 
-        improved = val_mcc > best_val_mcc
+        val_gap = _group_gap(val_pred, val_codes_np)
+        score = val_mcc if val_codes_np is None else val_mcc - fair_beta * val_gap
+
+        improved = score > best_score
         if improved:
-            best_val_mcc, best_epoch = val_mcc, epoch
+            best_score, best_val_mcc, best_gap, best_epoch = score, val_mcc, val_gap, epoch
             best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
             no_improve = 0
         else:
@@ -139,15 +163,17 @@ def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neigh
 
         if improved or epoch % 20 == 0:
             mark = "  *best*" if improved else ""
+            extra = "" if val_codes_np is None else f"  val_gap {val_gap:.4f}"
             print(f"[train:{edge_type}/seed{seed}] epoch {epoch:>3d}  loss {loss.item():.4f}  "
-                  f"val_mcc {val_mcc:.4f}{mark}")
+                  f"val_mcc {val_mcc:.4f}{extra}{mark}")
 
         if no_improve >= patience:
             break
 
     train_seconds = time.time() - t0
-    print(f"[stop:{edge_type}/seed{seed}] best_epoch={best_epoch}  best_val_mcc={best_val_mcc:.4f}  "
-          f"({train_seconds:.1f}s, {epoch}epoch)")
+    gap_note = "" if val_codes_np is None else f"  best_val_gap={best_gap:.4f}"
+    print(f"[stop:{edge_type}/seed{seed}] best_epoch={best_epoch}  best_val_mcc={best_val_mcc:.4f}"
+          f"{gap_note}  ({train_seconds:.1f}s, {epoch}epoch)")
 
     model.load_state_dict(best_state)
     model.eval()
@@ -166,7 +192,8 @@ def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neigh
         "hidden_dim": hidden_dim, "num_layers": num_layers, "dropout": dropout,
         "lr": lr, "weight_decay": weight_decay, "aggr": aggr,
         "max_epochs": max_epochs, "patience": patience, "val_size": val_size,
-        "fair_alpha": fair_alpha,
+        "fair_alpha": fair_alpha, "fair_beta": fair_beta,
+        "best_val_gap": best_gap,
         "best_epoch": best_epoch, "train_seconds": round(train_seconds, 1),
         "n_params": sum(p.numel() for p in model.parameters()),
         **metric_vals,

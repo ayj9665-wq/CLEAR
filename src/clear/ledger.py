@@ -27,8 +27,9 @@ LEDGER_COLS = [
     "edge_type", "k_neighbors", "hidden_dim", "num_layers", "dropout",
     "lr", "weight_decay", "aggr", "max_epochs", "patience", "val_size",
     "best_epoch", "train_seconds", "n_params",
-    # 완화 실험(10_fairloss.py)의 손실 벌점 세기. 이전 행에서는 비어 있다.
-    "fair_alpha",
+    # 완화 실험(10_fairloss.py)의 손실 벌점 세기와 조기 종료 공정성 가중치,
+    # 그리고 선택된 체크포인트의 val 격차. 이전 행에서는 비어 있다.
+    "fair_alpha", "fair_beta", "best_val_gap",
 ]
 
 
