@@ -26,7 +26,7 @@ python 01_clean.py            # raw CSV -> data/processed/clean.parquet
 python 02_sample.py           # -> data/processed/sample.parquet
 python 03_features.py         # -> data/processed/features.parquet
 python eda.py                 # -> outputs/eda_*.csv, outputs/eda_*.png
-python 05_train_baseline.py   # -> outputs/metrics.csv (shared ledger, appends), outputs/baseline_xgb_top_features.csv
+python 05_train_baseline.py   # -> outputs/metrics.csv (shared ledger, appends), outputs/baseline_xgb_top_features.csv, outputs/predictions_{logreg,xgboost}.csv
 python 04_build_graph.py            # -> data/processed/graph/edges_{geo,temporal,weapon}_k{k}.npy (k=config.K_NEIGHBORS)
 python 04_build_graph.py --k 20     # rebuild at a different degree cap (needed before --k_neighbors 20 below works)
 python 06_train_gnn.py              # -> outputs/metrics.csv (appends; geo only, one row per config.GNN_SEEDS seed)
@@ -36,8 +36,9 @@ python 06_train_gnn.py --edge_type geo --k_neighbors 20                  # use a
 python 06_train_gnn.py --edge_type geo --seeds 42,43,44                  # torch seeds to repeat over (split stays fixed)
 python 06_train_gnn.py --edge_type geo_temporal                          # union of geo+temporal edges
 python ablation_sweep.py            # in-process one-factor-at-a-time sweep; mean±std over config.GNN_SEEDS
-python 07_fairness.py               # -> outputs/fairness_group_metrics.csv (reads 06's prediction dump)
-python 07_fairness.py --edge_type temporal   # diagnose a non-default edge candidate's dump
+python 07_fairness.py               # diagnoses EVERY outputs/predictions_*.csv found -> fairness_group_metrics.csv + fairness_gaps.csv
+python 07_fairness.py --models graphsage_geo xgboost   # restrict to specific dumps
+python 07_fairness.py --min_n 5000 --n_boot 2000       # stricter group floor / more bootstrap reps
 ```
 
 Scripts must run from `src/` and in this order — each stage reads the parquet
@@ -64,7 +65,9 @@ lives in `src/clear/` (a normal importable package): `clear.data` (`load_xy`,
 `get_split`), `clear.metrics` (`evaluate` — the one AUC/MCC/F1/Sens/Spec
 definition), `clear.graph` (edge loading + `geo_temporal`-style unions),
 `clear.gnn` (the GraphSAGE model + training loop), `clear.ledger` (the shared
-`outputs/metrics.csv` log). The numbered scripts (`05`, `06`) and the
+`outputs/metrics.csv` log), `clear.predictions` (the test-prediction dump
+format that hands off from training to diagnosis), `clear.fairness` (group
+metrics, gaps, bootstrap CIs). The numbered scripts (`05`, `06`, `07`) and the
 unnumbered `ablation_sweep.py` are thin CLIs over `clear/`; `config.py` still
 holds all paths/constants. This replaced an earlier state where `load_xy`,
 the metric block, and the split were copy-pasted across `05`/`06` and kept in
@@ -209,20 +212,53 @@ set), so the diagnosis isn't reading one seed's threshold noise.
 **`07_fairness.py` measures three group-wise gaps** over each sensitive
 attribute: demographic-parity gap (max−min `selection_rate`), equalized-odds
 gaps (max−min TPR and FPR), and — as the reference the other two are read
-against — `base_rate_gap`, the max−min of the *actual* clearance rate. A model
-gap exceeding the base-rate gap means the model **amplified** a disparity that
-was already in the data, which is the diagnosis the project exists to make.
-Gaps are computed over named groups only (`Unknown` excluded — it's a
-recording artifact, not a population). Caveat when reading the numbers: on
-this sample the max and min race groups are `Native American/Alaska Native`
-(n=178) and `Asian/Pacific Islander` (n=1,431), so the headline max−min is
-small-sample-driven; the White-vs-Black contrast (n≈34k/21k) is the robust
-version of the same finding. This is the "민감속성 소수 그룹 희소" risk the
-dev-plan doc's Plan B table anticipated.
+against — `base_rate_gap`, the max−min of the *actual* clearance rate. The
+headline quantity is the **amplification ratio** = model gap ÷ base-rate gap:
+above 1 means the model widened a disparity that was already in the data,
+which is the diagnosis the project exists to make. Gaps are computed over
+named groups only (`Unknown` excluded — it's a recording artifact, not a
+population), and always at **two group floors** (all named groups, and
+n ≥ `config.FAIRNESS_MIN_GROUP_N`) because on this sample the race max and min
+are `Native American/Alaska Native` (n=178) and `Asian/Pacific Islander`
+(n=1,431) — reporting only the unfiltered number would hand a small-sample
+artifact the headline. This is the "민감속성 소수 그룹 희소" risk the dev-plan
+doc's Plan B table anticipated. Note that max−min is an upward-biased
+statistic (it's the max of noisy estimates); the bootstrap CI quantifies the
+interval but does **not** remove that bias, which is why both floors ship.
+
+**The bootstrap in `clear.fairness` resamples within groups, and shares its
+draws across models.** Group sizes are fixed by the data rather than sampled,
+so resampling is stratified within each group. Two implementation points
+matter. (1) Instead of drawing n×B row indices, note that every row falls in
+one of the four TN/FP/FN/TP cells, so a within-group resample is *exactly* a
+`Multinomial(n, cell_proportions)` draw — a `(B,4)` matrix per group, which is
+why B=1000 over 57k rows is instant. (2) When several models are diagnosed at
+once, the draw is lifted to **joint cells**: a row's cell is the tuple of its
+per-model cells (4^M of them), one multinomial draw is marginalized back to
+each model's `(B,4)`, and model-vs-model differences are therefore computed
+**paired within replicate**. This is load-bearing, not decoration — comparing
+each model's independent CI for overlap is invalid on a shared test set, and
+in practice it flips a conclusion here: GraphSAGE's and XGBoost's sex-gap
+amplification CIs overlap almost entirely (2.67 [2.39, 2.98] vs 2.55
+[2.29, 2.85]) while the paired difference is a clean +0.11 [+0.04, +0.20].
+`07` prints the contrast table and writes it to
+`outputs/fairness_model_contrasts.csv`; read model comparisons **only** from
+there.
+
+**`05` and `06` both dump test predictions** (`clear.predictions`) joined to
+the unencoded sensitive attributes, so diagnosis reads CSVs and never
+re-instantiates a model — `07` re-runs in seconds against a GNN that took
+minutes to train, and `08` (mitigation, not yet written) can write mitigated
+predictions in the same format to be diagnosed by the same code. `07` with no
+arguments diagnoses *every* dump it finds, which is what makes the flat-vs-graph
+fairness comparison the default rather than an extra step.
+`clear.predictions.assert_same_test_set` fails loudly if two dumps disagree on
+`row_index`, since a silently mismatched test set would still produce a
+plausible-looking comparison table.
 
 `data/processed/` is gitignored, as are the raw CSV in `dataset/` (too large),
-`outputs/*.png`, and `outputs/predictions_*.csv` (a few MB per edge type,
-regenerable by re-running `06`). The small result CSVs under `outputs/` **are**
+`outputs/*.png`, and `outputs/predictions_*.csv` (a few MB each, regenerable by
+re-running `05`/`06`). The small result CSVs under `outputs/` **are**
 tracked — they're the experiment record. The shared metrics ledger
 is `outputs/metrics.csv` (both trainers append; `model` column distinguishes
 rows); it supersedes the old per-model `baseline_metrics.csv`/`gnn_metrics.csv`.

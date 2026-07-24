@@ -119,3 +119,17 @@ GNN_VAL_SIZE = 0.15        # train+val 풀 중 val 비율
 # 돌려 mean±std를 남긴다 — 임계값 의존 지표(F1/Sens/Spec)가 run마다 ±3~4점
 # 흔들려서, 단일 run 비교는 신뢰할 수 없기 때문. baseline은 결정적이라 1행.
 GNN_SEEDS = [42, 43, 44]
+
+# ---- 공정성 진단 (07_fairness.py / clear.fairness) ----
+# 'Unknown'은 인구집단이 아니라 기록 누락 코드라 격차(max-min) 계산에서 뺀다.
+# 그룹별 지표 표에는 참고용으로 남긴다.
+FAIRNESS_UNKNOWN_LABEL = "Unknown"
+# 격차를 두 벌로 보고할 때의 최소 표본 기준. 이 표본(CA+TX+MI)에서 인종 그룹은
+# White 33,973 / Black 20,718 / Asian·PI 1,431 / Native 178 이라, max-min을
+# n=178 그룹이 결정해 버린다 — 개발계획서 Plan B의 "소수 그룹 희소" 리스크가
+# 그대로 실현된 상태다. 1000이면 Native만 빠지고 나머지 셋이 남는다.
+FAIRNESS_MIN_GROUP_N = 1000
+# 부트스트랩 반복수·신뢰수준. 그룹 크기는 데이터가 정한 값이므로 고정하고
+# 그룹 '안에서' 복원추출한다(자세한 근거는 clear/fairness.py).
+FAIRNESS_BOOTSTRAP_N = 1000
+FAIRNESS_CI_PCT = 95

@@ -18,6 +18,12 @@
    → LogisticRegression, XGBoost 학습
    → 5-fold CV 로 XGBoost 소규모 튜닝
    → 지표 계산 → outputs/metrics.csv(06과 공통 원장)에 append, 특성 중요도 저장
+   → 모델별 test 예측을 outputs/predictions_{logreg,xgboost}.csv로 저장
+
+예측 덤프는 06과 같은 형식(clear.predictions)이라 07_fairness.py가 baseline과
+GNN의 공정성 격차를 나란히 비교할 수 있다 — "그래프가 격차를 더 키우는가"를
+물으려면 flat 모델 쪽 예측도 있어야 하기 때문. 06과 달리 플래그로 끄지 않는다:
+05는 무인자 실행 규약이고, 덤프 비용이 사실상 0이다.
 
 baseline은 결정적(고정 split·고정 random_state)이라 모델당 1행이다. GNN처럼
 seed 반복을 하지 않는 이유: seed로 split을 바꾸면 test 집합이 달라져 06과의
@@ -34,7 +40,7 @@ from xgboost import XGBClassifier
 import config as C
 from clear.data import load_xy, get_split
 from clear.metrics import evaluate as compute_metrics
-from clear import ledger
+from clear import ledger, predictions
 
 
 def evaluate(name, model, X_te, y_te, seed, rows):
@@ -54,6 +60,7 @@ def evaluate(name, model, X_te, y_te, seed, rows):
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "model": name, "tag": "", "seed": seed, **metric_vals,
     })
+    return proba   # 호출부에서 예측 덤프(07 공정성 진단 입력)로 쓴다
 
 
 def main():
@@ -77,7 +84,7 @@ def main():
     # 1) 로지스틱 회귀 베이스라인
     logit = LogisticRegression(max_iter=1000, class_weight="balanced")
     logit.fit(X_tr, y_tr)
-    evaluate("logreg", logit, X_te, y_te, seed, rows)
+    proba_logit = evaluate("logreg", logit, X_te, y_te, seed, rows)
 
     # 2) XGBoost + 5-fold CV 소규모 튜닝
     cv = StratifiedKFold(n_splits=C.CV_FOLDS, shuffle=True, random_state=C.RANDOM_STATE)
@@ -91,12 +98,17 @@ def main():
     gs.fit(X_tr, y_tr)
     print(f"\n[XGB best params] {gs.best_params_}")
     print(f"[XGB CV best MCC] {gs.best_score_:.4f}")
-    evaluate("xgboost", gs.best_estimator_, X_te, y_te, seed, rows)
+    proba_xgb = evaluate("xgboost", gs.best_estimator_, X_te, y_te, seed, rows)
 
     # 저장: 지표 → 06과 공통 원장(outputs/metrics.csv)에 append
     for r in rows:
         ledger.append(r)
     print(f"\n[save] {ledger.LEDGER_PATH} (append, {len(rows)}행)")
+
+    # 저장: test 예측 덤프 → 07_fairness.py 입력(06과 동일 형식·동일 test 집합)
+    for name, proba in [("logreg", proba_logit), ("xgboost", proba_xgb)]:
+        p, _ = predictions.dump(predictions.path_for(name), split.test, y, proba)
+        print(f"[save] {p} (test {len(split.test):,}행)")
 
     # 저장: XGB 특성 중요도 top 25
     imp = pd.Series(gs.best_estimator_.feature_importances_, index=X.columns)

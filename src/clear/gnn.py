@@ -149,25 +149,18 @@ def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neigh
 def dump_test_predictions(rows, test_idx, y, path):
     """seed별 test_proba를 평균해 test 노드별 예측을 CSV로 저장(공정성 진단 07용).
 
+    GNN 사정(seed 평균)만 여기서 처리하고, 덤프 형식 자체는 clear.predictions가
+    정의한다 — 05_train_baseline.py(단일 결정적 예측)와 08(완화된 예측)이 같은
+    형식을 써야 07이 셋을 나란히 진단할 수 있기 때문.
+
     rows: train_eval 반환(각 dict에 '_test_proba'). test_idx: 원본 행 위치(np array,
     features.parquet 행에 대응 → load_sensitive()와 join 가능). 모든 seed가 동일 test
     집합이므로 proba를 평균해 seed 노이즈를 줄인 단일 예측을 남긴다.
     """
-    import pandas as pd
-    from clear.data import load_sensitive
+    from clear import predictions
 
     probas = np.stack([r["_test_proba"] for r in rows])   # (n_seeds, n_test)
-    proba_mean = probas.mean(axis=0)
-    sens = load_sensitive().iloc[test_idx].reset_index(drop=True)
-    out = pd.DataFrame({
-        "row_index": np.asarray(test_idx),
-        "y_true": np.asarray(y)[test_idx].astype(int),
-        "proba": proba_mean,
-        "pred": (proba_mean >= 0.5).astype(int),
-    })
-    out = pd.concat([out, sens], axis=1)
-    out.to_csv(path, index=False, encoding="utf-8-sig")
-    return path, out
+    return predictions.dump(path, test_idx, y, probas.mean(axis=0))
 
 
 def train_eval(edge_type, k_neighbors, hp, seeds, tag, X, y_t, train_t, val_t, test_t,
