@@ -32,9 +32,21 @@ def evaluate(y_true, y_proba, threshold=0.5):
     precision = 양성(검거) 예측의 정밀도 — 논문이 "미해결을 검거로 오분류하는 것을
         줄이려는" 의도로 함께 보고하는 지표.
     """
-    y_pred = (y_proba >= threshold).astype(int)
+    return evaluate_pred(y_true, (y_proba >= threshold).astype(int), y_proba)
+
+
+def evaluate_pred(y_true, y_pred, y_proba=None):
+    """예측 레이블이 이미 정해진 경우의 같은 지표 한 벌.
+
+    완화 단계(08)는 그룹마다 다른 임계값을 적용하므로 "확률 + 단일 임계값"으로
+    표현되지 않는다. 그래서 레이블을 직접 받는 입구를 둔다 — 지표 정의는
+    evaluate()와 **같은 코드**를 쓴다(정의가 갈라지면 완화 전후 비교가 무의미).
+
+    y_proba를 주면 auc를 함께 낸다. auc는 순위 기반이라 임계값을 어떻게 바꾸든
+    변하지 않는다 — 완화 곡선에서 auc가 평평한 것은 버그가 아니라 정의상 당연하다.
+    """
     return {
-        "auc": roc_auc_score(y_true, y_proba),
+        "auc": roc_auc_score(y_true, y_proba) if y_proba is not None else float("nan"),
         "mcc": matthews_corrcoef(y_true, y_pred),
         "f1": f1_score(y_true, y_pred),
         "sensitivity": recall_score(y_true, y_pred),               # TPR

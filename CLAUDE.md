@@ -42,6 +42,8 @@ python 07_fairness.py --min_n 5000 --n_boot 2000       # stricter group floor / 
 python 05_train_baseline.py --blind   # same, but with race/sex/ethnicity dummies dropped from X
 python 06_train_gnn.py --blind        # ditto (graph unchanged) -> predictions_graphsage_geo_blind.csv
 python edge_homophily.py              # -> outputs/edge_homophily.csv (are edges a sensitive-attribute proxy?)
+python 08_mitigate.py                 # -> outputs/mitigation_tradeoff.csv (group-wise threshold sweep, every dump)
+python 08_mitigate.py --criteria tpr --steps 21 --min_n 1000   # equalize TPR instead, finer grid, looser group floor
 ```
 
 Scripts must run from `src/` and in this order — each stage reads the parquet
@@ -269,6 +271,26 @@ amplification CIs overlap almost entirely (2.67 [2.39, 2.98] vs 2.55
 `07` prints the contrast table and writes it to
 `outputs/fairness_model_contrasts.csv`; read model comparisons **only** from
 there.
+
+**`08_mitigate.py` is the prescribe stage's post-processing half** (`clear.mitigate`):
+no retraining, just a per-group threshold applied to a saved dump. Strength is a
+single knob λ that interpolates each group's *target rate* — not its threshold —
+from its own observed rate (λ=0, reproduces the dump) to the pooled rate (λ=1,
+gap 0); rates interpolate meaningfully across models where raw thresholds do not.
+Two criteria: `dp` equalizes selection rate, `tpr` equalizes recall on solved
+cases. **Thresholds are fitted on a stratified half of the test set and scored on
+the other half**, so accuracy here is not comparable to the numbers elsewhere in
+this file — the λ=0 row is the baseline for that table. Findings: closing 93–99%
+of the gap costs at most 0.008 MCC on every model and both criteria, mild
+mitigation (λ≈0.2–0.5) often *improves* MCC by correcting between-group
+miscalibration, and the model ranking is unchanged after full mitigation
+(GraphSAGE 0.280 > XGBoost 0.267 > LogReg 0.228) — the graph's fairness cost is
+repayable and its accuracy edge survives repayment. It is cheap because the
+disparity sits in a narrow band at the boundary: even at λ=1 the thresholds move
+only ±0.03. Two things to keep attached to that result — demographic parity is a
+value choice here (the groups' *actual* clearance rates really do differ, 70.2%
+vs 65.5%), and post-processing needs the sensitive attribute **at decision time**,
+which is exactly the constraint an edge-level mitigation would avoid.
 
 **`edge_homophily.py` asks whether the edges themselves encode the sensitive
 attributes** — the mechanism question behind any GNN-vs-flat fairness gap,
