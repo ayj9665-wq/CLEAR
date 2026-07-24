@@ -9,8 +9,13 @@ config별 seed 반복 학습 → 원장(outputs/metrics.csv) append만 담당한
 ablation 결과로 승격된 값)와 config.GNN_SEEDS로 학습한다. 하이퍼파라미터는
 전부 argparse로 오버라이드 가능(개별 실험용).
 
-평가지표: AUC / MCC / F1 / Sensitivity / Specificity — 05_train_baseline.py와
-동일 체계(clear.metrics). MCC를 대표 지표로 val 조기 종료·순위에 쓴다.
+평가지표: AUC / MCC / F1 / Sensitivity / Specificity (+ 논문 대조용 Balanced
+Accuracy / Precision) — 05_train_baseline.py와 동일 체계(clear.metrics). MCC를
+대표 지표로 val 조기 종료·순위에 쓴다.
+
+기본으로 edge_type별 test 노드 예측(seed 평균 proba + 민감속성)을
+outputs/predictions_graphsage_{edge}.csv로 저장한다(--no_dump_predictions로 끔) —
+07_fairness.py의 그룹별 공정성 진단 입력.
 
 seed 반복: split은 config.RANDOM_STATE로 고정(=05와 동일 test 집합, 비교
 가능성 유지)하고 torch seed만 --seeds로 바꿔 학습 분산(mean±std)을 남긴다.
@@ -27,7 +32,7 @@ import argparse
 
 import config as C   # torch import 전에 필요 (KMP_DUPLICATE_LIB_OK 등 env 설정)
 from clear.data import load_xy
-from clear.gnn import prepare, train_eval
+from clear.gnn import prepare, train_eval, dump_test_predictions
 from clear import ledger
 
 import torch
@@ -56,6 +61,9 @@ def main():
     parser.add_argument("--patience", type=int, default=C.GNN_PATIENCE)
     parser.add_argument("--val_size", type=float, default=C.GNN_VAL_SIZE)
     parser.add_argument("--tag", default="", help="원장에서 구분할 자유 라벨")
+    parser.add_argument("--dump_predictions", action="store_true", default=True,
+                         help="edge_type별 test 노드 예측을 outputs/predictions_graphsage_{edge}.csv로 저장(공정성 진단 07용)")
+    parser.add_argument("--no_dump_predictions", dest="dump_predictions", action="store_false")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -74,9 +82,14 @@ def main():
     )
     edge_types = ["geo", "temporal", "weapon"] if args.edge_type == "all" else [args.edge_type]
 
+    test_idx = test_t.cpu().numpy()
     for edge_type in edge_types:
-        train_eval(edge_type, args.k_neighbors, hp, args.seeds, args.tag,
-                   X, y_t, train_t, val_t, test_t, device, ledger=ledger)
+        rows = train_eval(edge_type, args.k_neighbors, hp, args.seeds, args.tag,
+                          X, y_t, train_t, val_t, test_t, device, ledger=ledger)
+        if args.dump_predictions:
+            pred_path = C.OUTPUT_DIR / f"predictions_graphsage_{edge_type}.csv"
+            dump_test_predictions(rows, test_idx, y, pred_path)
+            print(f"[save] {pred_path} (test 노드 {len(test_idx):,}개, seed 평균 proba)")
     print(f"[save] {ledger.LEDGER_PATH} (append, {len(edge_types)}×{len(args.seeds)}행)")
 
 

@@ -40,6 +40,18 @@ def load_xy():
     return X, y
 
 
+def load_sensitive():
+    """features.parquet → sens__* 원본(비인코딩) DataFrame, X/y와 같은 행 순서.
+
+    load_xy()가 학습 입력에서 떼어낸 민감속성(sens__Victim Race/Sex)을 그대로
+    돌려준다. 공정성 진단(07)에서 test 인덱스로 iloc해 예측과 join하기 위한 것 —
+    get_split이 돌려주는 인덱스는 이 DataFrame 행 위치와 그대로 대응한다.
+    """
+    df = pd.read_parquet(C.PROCESSED_DIR / "features.parquet")
+    sens_cols = [c for c in df.columns if c.startswith("sens__")]
+    return df[sens_cols].reset_index(drop=True)
+
+
 def get_split(y, *, test_size=None, val_size=None, random_state=None):
     """층화 분할 인덱스를 결정적으로 계산. 05·06 공통 출처.
 

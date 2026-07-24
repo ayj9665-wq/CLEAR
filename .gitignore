@@ -4,6 +4,9 @@ data/processed/
 outputs/*.png
 outputs/*.pkl
 outputs/*.joblib
+# test 노드별 예측 덤프(엣지당 수 MB). 06_train_gnn.py 재실행으로 재생성 가능.
+# 작은 결과 CSV(metrics.csv 등)는 실험 기록이므로 커밋한다.
+outputs/predictions_*.csv
 
 # Python
 __pycache__/
@@ -12,6 +15,9 @@ __pycache__/
 .venv/
 venv/
 .joblib_tmp/
+
+# Tooling (세션별 로컬 설정)
+.claude/
 
 # OS
 .DS_Store

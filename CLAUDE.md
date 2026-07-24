@@ -36,6 +36,8 @@ python 06_train_gnn.py --edge_type geo --k_neighbors 20                  # use a
 python 06_train_gnn.py --edge_type geo --seeds 42,43,44                  # torch seeds to repeat over (split stays fixed)
 python 06_train_gnn.py --edge_type geo_temporal                          # union of geo+temporal edges
 python ablation_sweep.py            # in-process one-factor-at-a-time sweep; mean±std over config.GNN_SEEDS
+python 07_fairness.py               # -> outputs/fairness_group_metrics.csv (reads 06's prediction dump)
+python 07_fairness.py --edge_type temporal   # diagnose a non-default edge candidate's dump
 ```
 
 Scripts must run from `src/` and in this order — each stage reads the parquet
@@ -69,8 +71,9 @@ the metric block, and the split were copy-pasted across `05`/`06` and kept in
 sync by hand. `05_train_baseline.py` was built before
 `04_build_graph.py`/`06_train_gnn.py` despite the lower number: it's the
 pre-graph performance floor (flat XGBoost/LogReg) the GNN has to beat, so it
-needed to exist first. `07_fairness.py` (fairness diagnosis, week 3) is still
-unimplemented — that's the one remaining numbering gap.
+needed to exist first. `07_fairness.py` (fairness diagnosis, week 3) is now
+implemented, so the numbering is contiguous; the mitigation stage (week 3's
+"prescribe" half) has no script yet.
 
 ```
 dataset/kaggle_homicide_Reports_1980_2014.csv  (not in git, ~638k rows)
@@ -81,7 +84,10 @@ dataset/kaggle_homicide_Reports_1980_2014.csv  (not in git, ~638k rows)
   -> eda.py / 05_train_baseline.py       (read features.parquet or sample.parquet)
   -> 04_build_graph.py                   (reads sample.parquet + features.parquet ->
                                            data/processed/graph/edges_{geo,temporal,weapon}.npy)
-  -> 06_train_gnn.py                     (reads features.parquet + edges_*.npy)
+  -> 06_train_gnn.py                     (reads features.parquet + edges_*.npy ->
+                                           outputs/predictions_graphsage_{edge}.csv)
+  -> 07_fairness.py                      (reads that prediction dump ->
+                                           outputs/fairness_group_metrics.csv)
 ```
 
 **Graph construction (`04_build_graph.py`) uses blocking, not literal
@@ -190,10 +196,34 @@ arithmetic.
 `03_features.py` as `sens__*` columns *unencoded*, separate from the model
 input matrix `X` — they exist for the fairness diagnosis stage, not for
 training. `clear.data.load_xy()` (shared by `05`/`06`) explicitly strips them
-before fitting.
+before fitting. `clear.data.load_sensitive()` is the other half of that pair:
+it returns the same `sens__*` columns in the *same row order*, so the split
+indices from `get_split` `iloc` into it directly. That's what lets `06` dump
+test-node predictions joined to sensitive attributes
+(`outputs/predictions_graphsage_{edge}.csv`, on by default,
+`--no_dump_predictions` to skip) and `07_fairness.py` diagnose group-wise
+fairness **without re-running training** — it reads a CSV, not a model. The
+dumped `proba` is the mean over `config.GNN_SEEDS` (the seeds share one test
+set), so the diagnosis isn't reading one seed's threshold noise.
 
-`outputs/` and `data/processed/` are gitignored (regenerable); the raw CSV in
-`dataset/` is also gitignored (too large to commit). The shared metrics ledger
+**`07_fairness.py` measures three group-wise gaps** over each sensitive
+attribute: demographic-parity gap (max−min `selection_rate`), equalized-odds
+gaps (max−min TPR and FPR), and — as the reference the other two are read
+against — `base_rate_gap`, the max−min of the *actual* clearance rate. A model
+gap exceeding the base-rate gap means the model **amplified** a disparity that
+was already in the data, which is the diagnosis the project exists to make.
+Gaps are computed over named groups only (`Unknown` excluded — it's a
+recording artifact, not a population). Caveat when reading the numbers: on
+this sample the max and min race groups are `Native American/Alaska Native`
+(n=178) and `Asian/Pacific Islander` (n=1,431), so the headline max−min is
+small-sample-driven; the White-vs-Black contrast (n≈34k/21k) is the robust
+version of the same finding. This is the "민감속성 소수 그룹 희소" risk the
+dev-plan doc's Plan B table anticipated.
+
+`data/processed/` is gitignored, as are the raw CSV in `dataset/` (too large),
+`outputs/*.png`, and `outputs/predictions_*.csv` (a few MB per edge type,
+regenerable by re-running `06`). The small result CSVs under `outputs/` **are**
+tracked — they're the experiment record. The shared metrics ledger
 is `outputs/metrics.csv` (both trainers append; `model` column distinguishes
 rows); it supersedes the old per-model `baseline_metrics.csv`/`gnn_metrics.csv`.
 

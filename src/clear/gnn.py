@@ -140,7 +140,34 @@ def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neigh
         "best_epoch": best_epoch, "train_seconds": round(train_seconds, 1),
         "n_params": sum(p.numel() for p in model.parameters()),
         **metric_vals,
+        # 공정성 진단(07)용 원자료. '_' 접두 키는 ledger.append의 reindex(columns=
+        # LEDGER_COLS)에서 자동으로 떨어져 원장 CSV엔 안 들어간다.
+        "_test_proba": test_proba,
     }
+
+
+def dump_test_predictions(rows, test_idx, y, path):
+    """seed별 test_proba를 평균해 test 노드별 예측을 CSV로 저장(공정성 진단 07용).
+
+    rows: train_eval 반환(각 dict에 '_test_proba'). test_idx: 원본 행 위치(np array,
+    features.parquet 행에 대응 → load_sensitive()와 join 가능). 모든 seed가 동일 test
+    집합이므로 proba를 평균해 seed 노이즈를 줄인 단일 예측을 남긴다.
+    """
+    import pandas as pd
+    from clear.data import load_sensitive
+
+    probas = np.stack([r["_test_proba"] for r in rows])   # (n_seeds, n_test)
+    proba_mean = probas.mean(axis=0)
+    sens = load_sensitive().iloc[test_idx].reset_index(drop=True)
+    out = pd.DataFrame({
+        "row_index": np.asarray(test_idx),
+        "y_true": np.asarray(y)[test_idx].astype(int),
+        "proba": proba_mean,
+        "pred": (proba_mean >= 0.5).astype(int),
+    })
+    out = pd.concat([out, sens], axis=1)
+    out.to_csv(path, index=False, encoding="utf-8-sig")
+    return path, out
 
 
 def train_eval(edge_type, k_neighbors, hp, seeds, tag, X, y_t, train_t, val_t, test_t,
