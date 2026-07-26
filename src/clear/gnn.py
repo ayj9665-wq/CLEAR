@@ -109,7 +109,7 @@ def fairness_penalty(proba, codes):
 def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neighbors,
               hidden_dim, num_layers, dropout, lr, weight_decay, aggr,
               max_epochs, patience, val_size, tag, device,
-              fair_alpha=0.0, fair_codes=None, fair_beta=0.0):
+              fair_alpha=0.0, fair_codes=None, fair_beta=0.0, grad_clip=0.0):
     torch.manual_seed(seed)
     model = GraphSAGE(data.x.shape[1], hidden_dim, num_layers, dropout, aggr).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -141,6 +141,10 @@ def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neigh
             loss = loss + fair_alpha * fairness_penalty(
                 torch.sigmoid(out[train_idx]), fair_codes[train_idx])
         loss.backward()
+        if grad_clip and grad_clip > 0:
+            # 높은 fair_alpha에서 벌점 gradient가 BCE를 압도해 스텝이 튀는 것을 막는다
+            # (§10-2의 최적화 불안정). fair_alpha=0/grad_clip=0이면 기존 동작 그대로.
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
 
         model.eval()

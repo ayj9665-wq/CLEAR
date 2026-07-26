@@ -56,6 +56,10 @@ def main():
     ap.add_argument("--min_n", type=int, default=5000,
                     help="벌점·격차 대상 그룹의 최소 표본수(기본 5000 = 인종은 White/Black)")
     ap.add_argument("--sighted", action="store_true", help="민감속성 열을 X에 남긴 채 실행")
+    ap.add_argument("--grad_clip", type=float, default=0.0,
+                    help="0보다 크면 매 스텝 grad L2 norm을 이 값으로 클리핑한다. "
+                         "높은 alpha에서 벌점이 BCE를 압도해 생기는 최적화 불안정"
+                         "(§10-2, MCC seed std 급증)을 겨냥한 것. 0이면 클리핑 없음.")
     args = ap.parse_args()
 
     seeds = ([int(s) for s in args.seeds.split(",")] if args.seeds else C.GNN_SEEDS)
@@ -86,11 +90,13 @@ def main():
     hp = dict(hidden_dim=C.GNN_HIDDEN_DIM, num_layers=C.GNN_NUM_LAYERS,
               dropout=C.GNN_DROPOUT, lr=C.GNN_LR, weight_decay=C.GNN_WEIGHT_DECAY,
               aggr=C.GNN_AGGR, max_epochs=C.GNN_MAX_EPOCHS, patience=C.GNN_PATIENCE,
-              val_size=C.GNN_VAL_SIZE)
+              val_size=C.GNN_VAL_SIZE, grad_clip=args.grad_clip)
 
     rows = []
     for alpha in args.alphas:
         tag = (f"fairloss_a{alpha:g}" + (f"_b{args.beta:g}" if args.beta else "")
+               + (f"_gc{args.grad_clip:g}" if args.grad_clip else "")
+               + ("" if args.attr == "Victim Race" else f"_{args.attr.split()[-1].lower()}")
                + ("" if blind else "_sighted"))
         print(f"\n=== {tag} ===")
         seed_rows = []
@@ -117,6 +123,7 @@ def main():
                 "balanced_accuracy", "precision"]}
         rows.append({
             "tag": tag, "alpha": alpha, "beta": args.beta,
+            "grad_clip": args.grad_clip,
             "blind": blind, "attribute": args.attr,
             "best_val_gap": float(np.mean([r["best_val_gap"] for r in seed_rows]))
             if args.beta else np.nan,
@@ -136,17 +143,23 @@ def main():
 
     out = pd.DataFrame(rows)
     path = C.OUTPUT_DIR / "fairloss_tradeoff.csv"
-    # beta별 곡선을 한 파일에 모은다(같은 축에 겹쳐 그려야 비교가 된다). 같은
-    # (alpha, beta, blind) 조합은 최신 실행으로 교체 — 덮어쓰면 이전 beta 곡선이,
-    # 그냥 append하면 재실행분이 중복으로 남는다.
+    # 여러 곡선(attribute·beta·grad_clip·blind 조합)을 한 파일에 모은다 — 같은 축에
+    # 겹쳐 그려야 비교가 되기 때문. 한 조합은 최신 실행으로 교체(덮어쓰면 다른
+    # 곡선이, 그냥 append하면 재실행분이 중복). 키에 attribute·grad_clip을 포함해야
+    # 성별 스윕이 인종 곡선을, 클리핑 실행이 기본 곡선을 지우지 않는다.
+    key = ["attribute", "alpha", "beta", "grad_clip", "blind"]
     if path.exists():
         old = pd.read_csv(path)
-        if {"alpha", "beta", "blind"} <= set(old.columns):
-            key = ["alpha", "beta", "blind"]
+        # 이 열들이 없던 시절의 행 backfill: attribute는 인종, grad_clip은 0.
+        if "attribute" not in old.columns:
+            old["attribute"] = "Victim Race"
+        if "grad_clip" not in old.columns:
+            old["grad_clip"] = 0.0
+        if set(key) <= set(old.columns):
             merged = pd.MultiIndex.from_frame(out[key])
             old = old[~pd.MultiIndex.from_frame(old[key]).isin(merged)]
             out = pd.concat([old, out], ignore_index=True)
-    out = out.sort_values(["blind", "beta", "alpha"]).reset_index(drop=True)
+    out = out.sort_values(["attribute", "blind", "grad_clip", "beta", "alpha"]).reset_index(drop=True)
     out.to_csv(path, index=False, encoding="utf-8-sig")
     print(f"\n[save] {path} (누적 {len(out)}행)")
     print(out[["alpha", "beta", "acc_mcc", "acc_mcc_std", "dp_gap", "dp_amplification"]]
