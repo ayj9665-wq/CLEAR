@@ -241,10 +241,39 @@ error, not a silent fallback.
 **Of the 3 edge candidates, `geo` (State+City blocking) is the default**
 (`config.GNN_DEFAULT_EDGE_TYPE = "geo"`): it clears the XGBoost baseline on the
 **stable** metrics — MCC (0.285 ± 0.0001 vs 0.274) and AUC (0.712 ± 0.001 vs
-0.703), margins ~10–100× the GNN's own seed-to-seed noise. The apparent
-F1/Sensitivity ordering between GNN and baseline is **within** that noise
-(sensitivity std ≈ 0.02), so it isn't claimed as a win — this is exactly what
-the seed-repeats were added to expose. `temporal`/`weapon`/`geo_temporal`
+0.703), margins ~10–100× the GNN's own seed-to-seed noise. **Which metrics can
+carry the accuracy claim is a measured question, not a stylistic one** — the
+full margin-vs-noise table for GraphSAGE(geo) − XGBoost, sighted:
+
+| metric | margin | GNN seed std | ratio | |
+|---|---|---|---|---|
+| MCC | +0.0111 | ±0.0006 | **19.0×** | claimable |
+| AUC | +0.0083 | ±0.0006 | 14.6× | claimable |
+| Balanced Accuracy | +0.0061 | ±0.0009 | **6.6×** | claimable |
+| Precision | +0.0062 | ±0.0050 | **1.2×** | within noise |
+| Specificity | +0.0156 | ±0.0222 | 0.7× | within noise |
+| F1 | +0.0003 | ±0.0101 | 0.0× | within noise |
+| Sensitivity | −0.0035 | ±0.0205 | −0.2× | within noise |
+
+So **Precision joins F1/Sens/Spec as a metric whose GNN-vs-baseline margin
+cannot be claimed** — it looks comparable to Balanced Accuracy's (+0.0062 vs
++0.0061) but its own seed std is 5× larger, because it depends on the 0.5
+decision threshold and ignores the negative class entirely. Only MCC and AUC
+(threshold-free) and Balanced Accuracy clear the floor. This is exactly what the
+seed-repeats were added to expose.
+
+**Metric ordering is identical under MCC and Balanced Accuracy** — GraphSAGE >
+XGBoost > LogReg sighted, and GraphSAGE(geo) > XGBoost > GraphSAGE(temporal) >
+LogReg blind. The representative-metric choice therefore does not change any
+conclusion; it only changes which number leads the presentation. The project's
+resolution: **Balanced Accuracy + Precision lead in literature-comparison
+contexts** (`reports/모델벤치마크_선행연구비교.md` §1, and the results page),
+because Campedelli 2022 reports only those two; **MCC stays the selection
+criterion** (GridSearchCV scoring, validation early stopping, ablation ranking)
+and is labelled as such rather than as "the representative metric". Switching
+selection to Balanced Accuracy is coherent but is not a relabelling: it would
+move the operating point, and every fairness number here is
+threshold-dependent, so the diagnosis and both mitigations would need re-running. `temporal`/`weapon`/`geo_temporal`
 (their union) remain runnable via `--edge_type` but aren't the default.
 `src/experiments/ablation.py` (since removed — see Scope; a utility with no
 pipeline artifact of its own) now **imports `clear.gnn` and runs in-process**
@@ -274,8 +303,12 @@ paper-comparable on the data/split/encoding side.
 **Evaluation metrics are AUC/MCC/F1/Sensitivity/Specificity** (the project's
 own choice, a deliberate deviation from the paper) **plus Balanced Accuracy +
 Precision** — the latter two added later purely so our models can be compared
-to the literature (Campedelli 2022 reports *only* those two) on a shared axis;
-they are secondary reporting metrics, not selection criteria. There is now a
+to the literature (Campedelli 2022 reports *only* those two) on a shared axis.
+**They lead the presentation wherever the paper comparison is the point** —
+`reports/모델벤치마크_선행연구비교.md` §1 and the published results page put
+Balanced Accuracy and Precision first — but they are **not** selection criteria;
+MCC is (see the margin-vs-noise table above for why this split is measured
+rather than stylistic). There is now a
 single definition of this 7-metric set, `clear.metrics.evaluate`, that both
 every trainer calls (it used to be copy-pasted per script and kept in sync by
 hand), so they can't drift apart. `clear.results` carries all seven as ordinary
@@ -288,11 +321,26 @@ California 0.802) — expected, because the paper's top-2 SHAP predictors are
 unavailable here: `Circumstance` is absent from the Kaggle CSV, and
 `Number of Offenders` (= `Perpetrator Count`) is excluded as leakage. See
 `reports/모델벤치마크_선행연구비교.md` for the full comparison and analysis.
-MCC is the
-representative scalar for model selection (`GridSearchCV(scoring=
+MCC is the **selection criterion** (`GridSearchCV(scoring=
 "matthews_corrcoef")` in the baseline, validation-MCC early stopping in the
 GNN, MCC-sorted ablation summaries) because it stays informative under this
-dataset's ~32%/68% class imbalance the way plain accuracy wouldn't.
+dataset's ~32%/68% class imbalance the way plain accuracy wouldn't, and because
+it is the sharpest discriminator available here (19× the seed noise, against
+Balanced Accuracy's 6.6×). Call it that — "selection criterion" — rather than
+"the representative metric", so a table that reports Balanced Accuracy is not
+read as reporting a quantity the models were tuned on.
+
+**Keeping the paper-comparison metrics pays off concretely at the mitigation
+stage.** Under MCC alone the two working mitigations look interchangeable
+(−0.0025 vs −0.0043). Across the wider set they are doing different things:
+post-processing moves the two group thresholds in *opposite* directions
+(White 0.500→0.517, Black 0.500→0.470), so the global operating point cancels
+out and every metric drifts down together by ~0.001; the loss penalty shifts the
+operating point *globally* — Sensitivity +0.0245, Specificity −0.0315, Precision
+−0.0075 — i.e. it predicts "solved" more often and pays for it in precision.
+The load-bearing evidence is the **sign pattern** (Sens up / Spec down), not the
+magnitudes, since the loss-penalty figures carry retraining noise
+(Sens ±0.021, Spec ±0.022, Precision ±0.005) while post-processing has none.
 Sensitivity = recall on the positive (solved) class; Specificity =
 `recall_score(y, pred, pos_label=0)`, i.e. recall on the negative (unsolved)
 class — both via sklearn's `recall_score` rather than manual confusion-matrix
