@@ -1,7 +1,7 @@
 # 모델 보고서 — XGBoost (flat baseline)
 
 - 작성자: 안윤지 · 작성일: 2026-07-23
-- 파이프라인 위치: [05_train_baseline.py](../src/05_train_baseline.py) (`model=xgboost`)
+- 파이프라인 위치: [experiments/train_baseline.py](../src/experiments/train_baseline.py) (`model=xgboost`)
 - 벤치마크/캐비엇 공통 문서: [모델벤치마크_선행연구비교.md](모델벤치마크_선행연구비교.md)
 
 ## 1. 역할 — "GNN이 넘어야 할 기준선"
@@ -31,7 +31,7 @@ CLEAR의 핵심 질문 "그래프가 실제로 도움이 되는가"는 곧 **Gra
 - 대표 스칼라 **MCC 0.274**. logreg(0.233)보다 확실히 높아 비선형·상호작용이 신호를
   더 잡음. GraphSAGE(0.287)에는 **안정 지표(MCC·AUC)에서 근소하게 뒤짐** →
   "그래프가 도움이 된다"의 근거가 됨(자세한 판정은 GraphSAGE 보고서).
-- 출처: `outputs/metrics.csv`. 결정적이라 1행.
+- 출처: `outputs/results.csv`. 결정적이라 1행.
 
 ## 4. 선행연구 대비 (공유지표 Balanced Acc · Precision)
 

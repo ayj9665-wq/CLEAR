@@ -1,5 +1,5 @@
 """
-05_train_baseline.py — flat 베이스라인 (그래프 없이 노드 특성만)
+experiments/train_baseline.py — flat 베이스라인 (그래프 없이 노드 특성만)
 
 이 모델은 2주차 GNN 성능을 비교할 '기준선'이다.
 "그래프가 실제로 도움이 되는가"를 판정하려면 먼저 그래프를 무시한
@@ -20,10 +20,10 @@
    → 지표 계산 → outputs/metrics.csv(06과 공통 원장)에 append, 특성 중요도 저장
    → 모델별 test 예측을 outputs/predictions_{logreg,xgboost}.csv로 저장
 
-예측 덤프는 06과 같은 형식(clear.predictions)이라 07_fairness.py가 baseline과
+예측 덤프는 06과 같은 형식(clear.predictions)이라 experiments/diagnose_fairness.py가 baseline과
 GNN의 공정성 격차를 나란히 비교할 수 있다 — "그래프가 격차를 더 키우는가"를
 물으려면 flat 모델 쪽 예측도 있어야 하기 때문. 06과 달리 플래그로 끄지 않는다:
-05는 무인자 실행 규약이고, 덤프 비용이 사실상 0이다.
+train_baseline는 무인자 실행 규약이고, 덤프 비용이 사실상 0이다.
 
 baseline은 결정적(고정 split·고정 random_state)이라 모델당 1행이다. GNN처럼
 seed 반복을 하지 않는 이유: seed로 split을 바꾸면 test 집합이 달라져 06과의
@@ -41,7 +41,7 @@ from xgboost import XGBClassifier
 import config as C
 from clear.data import load_xy, get_split
 from clear.metrics import evaluate as compute_metrics
-from clear import ledger, predictions
+from clear import predictions, results
 
 
 def evaluate(name, model, X_te, y_te, seed, rows, tag=""):
@@ -76,7 +76,7 @@ def main():
           + (f"  (blind: {C.SENSITIVE_FEATURE_COLS} 더미 제외)" if args.blind else ""))
 
     # get_split의 trainval(=예전 train_test_split의 train쪽, 순서 보존)로
-    # 학습, test는 06_train_gnn.py와 동일 집합. CV는 이 trainval 안에서 돈다.
+    # 학습, test는 experiments/train_gnn.py와 동일 집합. CV는 이 trainval 안에서 돈다.
     split = get_split(y)
     X_tr, y_tr = X.iloc[split.trainval], y[split.trainval]
     X_te, y_te = X.iloc[split.test], y[split.test]
@@ -111,20 +111,30 @@ def main():
 
     # 저장: 지표 → 06과 공통 원장(outputs/metrics.csv)에 append
     for r in rows:
-        ledger.append(r)
-    print(f"\n[save] {ledger.LEDGER_PATH} (append, {len(rows)}행)")
+        results.write(results.from_run(r, "train", blind=args.blind))
+    print(f"\n[save] {results.results_path()} (family=train, {len(rows)}회)")
 
-    # 저장: test 예측 덤프 → 07_fairness.py 입력(06과 동일 형식·동일 test 집합)
+    # 저장: test 예측 덤프 → experiments/diagnose_fairness.py 입력(06과 동일 형식·동일 test 집합)
     for name, proba in [("logreg", proba_logit), ("xgboost", proba_xgb)]:
         p, _ = predictions.dump(predictions.path_for(name + suffix), split.test, y, proba)
         print(f"[save] {p} (test {len(split.test):,}행)")
 
-    # 저장: XGB 특성 중요도 top 25
+    # 저장: XGB 특성 중요도 top 25.
+    # sighted/blind를 **한 파일에 blind 열로** 담는다. 예전에는 --blind가 파일을
+    # 하나 더 만들었는데(`..._blind.csv`), 조건이 하나 늘 때마다 파일이 하나씩
+    # 느는 방식이고 두 조건을 나란히 보려면 매번 두 파일을 join해야 했다.
     imp = pd.Series(gs.best_estimator_.feature_importances_, index=X.columns)
     imp = imp.sort_values(ascending=False).head(25)
-    out_i = C.OUTPUT_DIR / f"baseline_xgb_top_features{suffix}.csv"
-    imp.to_csv(out_i, header=["importance"], encoding="utf-8-sig")
-    print(f"[save] {out_i}")
+    new = pd.DataFrame({"blind": args.blind, "feature": imp.index,
+                        "importance": imp.values})
+    out_i = C.OUTPUT_DIR / "baseline_xgb_top_features.csv"
+    if out_i.exists():
+        old = pd.read_csv(out_i)
+        if "blind" in old.columns:                     # 같은 조건은 최신으로 교체
+            new = pd.concat([old[old["blind"] != args.blind], new], ignore_index=True)
+    new.sort_values(["blind", "importance"], ascending=[True, False]) \
+       .to_csv(out_i, index=False, encoding="utf-8-sig")
+    print(f"[save] {out_i} (blind={args.blind})")
     print("\n[XGB 상위 특성]\n", imp.head(10))
 
 

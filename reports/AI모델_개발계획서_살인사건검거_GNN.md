@@ -207,9 +207,9 @@ XGBoost / LogReg          GNN (2~3 layer GraphSAGE)
 │   ├── 02_sample.py
 │   ├── 03_features.py
 │   ├── 04_build_graph.py
-│   ├── 05_train_baseline.py
-│   ├── 06_train_gnn.py
-│   └── 07_fairness.py
+│   ├── experiments/train_baseline.py
+│   ├── experiments/train_gnn.py
+│   └── experiments/diagnose_fairness.py
 ├── notebooks/eda.ipynb
 ├── outputs/ (그림·표·모델)
 └── 문제정의서 · 개발계획서(.md)

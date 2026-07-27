@@ -1,4 +1,4 @@
-"""test 노드 예측 덤프의 단일 출처 — 학습 단계(05·06)와 진단 단계(07·08)의 인터페이스.
+"""test 노드 예측 덤프의 단일 출처 — 학습 단계(train_baseline·train_gnn)와 진단 단계(diagnose_fairness·08)의 인터페이스.
 
 공정성 진단은 모델을 다시 띄우지 않는다. 학습 스크립트가 test 예측을 민감속성과
 함께 CSV로 떨어뜨리고, 진단은 그 CSV만 읽는다 — 그래서 GNN 재학습(수 분) 없이
@@ -20,12 +20,25 @@ import numpy as np
 import config as C
 from clear.data import load_sensitive
 
-# 파일명 규약: predictions_{model}.csv. graphsage만 엣지 후보별로 갈리므로
-# predictions_graphsage_{edge}.csv. .gitignore의 outputs/predictions_*.csv가
-# 전부 커버한다(엣지당 수 MB, 재실행으로 재생성 가능).
+# 덤프는 outputs/predictions/{model}[_{edge}].csv에 모아 둔다.
+#
+# 예전에는 outputs/ 바로 아래에 predictions_*.csv로 흩어져 있었다. 완화 스윕이
+# 설정마다 한 개씩 남기다 보니 42개(79MB)까지 늘어, 실제 실험 기록인 결과 CSV
+# 9개(1.5MB)가 파일 목록에서 묻혔다. 전부 gitignore되고 재실행으로 재생성되는
+# 중간 산출물이므로 디렉터리 하나로 내린다.
+PREDICTIONS_DIRNAME = "predictions"
+
+
+def predictions_dir():
+    """호출 시점 계산 — OUTPUT_DIR을 바꾸면 덤프도 함께 격리된다."""
+    return C.OUTPUT_DIR / PREDICTIONS_DIRNAME
+
+
 def path_for(model, edge_type=None):
     stem = f"{model}_{edge_type}" if edge_type else model
-    return C.OUTPUT_DIR / f"predictions_{stem}.csv"
+    d = predictions_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{stem}.csv"
 
 
 def dump(path, test_idx, y, proba, threshold=0.5):
@@ -54,13 +67,18 @@ def load(path):
 
 
 def discover(models=None):
-    """outputs/의 predictions_*.csv를 {라벨: 경로}로 수집(라벨 = 파일명 stem).
+    """outputs/predictions/의 덤프를 {라벨: 경로}로 수집(라벨 = 파일명 stem).
 
-    07이 인자 없이도 "있는 덤프 전부"를 진단할 수 있게 하는 용도. models를 주면
-    그 라벨들로 거른다. 정렬은 파일명 순 — 실행마다 표 순서가 바뀌지 않게.
+    diagnose_fairness가 인자 없이도 "있는 덤프 전부"를 진단할 수 있게 하는 용도.
+    models를 주면 그 라벨들로 거른다. 정렬은 파일명 순 — 실행마다 표 순서가
+    바뀌지 않게.
     """
-    found = {p.stem.replace("predictions_", ""): p
-             for p in sorted(C.OUTPUT_DIR.glob("predictions_*.csv"))}
+    d = predictions_dir()
+    found = {p.stem: p for p in sorted(d.glob("*.csv"))} if d.exists() else {}
+    # 하위 디렉터리로 옮기기 전 규약(outputs/predictions_*.csv)도 계속 읽는다 —
+    # 옮기지 않은 예전 작업 디렉터리에서도 진단이 그대로 돌게.
+    for p in sorted(C.OUTPUT_DIR.glob("predictions_*.csv")):
+        found.setdefault(p.stem.replace("predictions_", ""), p)
     if models:
         found = {m: found[m] for m in models if m in found}
     return found
@@ -69,7 +87,7 @@ def discover(models=None):
 def assert_same_test_set(dumps):
     """여러 덤프가 동일한 test 행을 가리키는지 검증(모델 간 비교의 전제).
 
-    clear.data.get_split이 05·06 양쪽에 같은 test 인덱스를 주므로 정상 상태에선
+    clear.data.get_split이 train_baseline·train_gnn 양쪽에 같은 test 인덱스를 주므로 정상 상태에선
     항상 통과한다. 그래도 확인하는 이유: 어긋나도 조용히 "그럴듯한" 비교표가
     나오기 때문이다 — 분할 로직이 바뀌었을 때 여기서 걸려야 한다.
     dumps: {라벨: DataFrame}

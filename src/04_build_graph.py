@@ -3,7 +3,7 @@
 
 개발계획서가 제시한 3가지 엣지 후보(지리·시간·수법 유사)를 각각 독립적으로
 구성해 평균 차수·연결 성분 등을 비교한다. 최종 그래프 선택과 GNN 학습
-(06_train_gnn.py)은 이 비교표를 보고 다음 단계에서 결정한다.
+(experiments/train_gnn.py)은 이 비교표를 보고 다음 단계에서 결정한다.
 
 핵심 설계: "특성 유사도 top-k" 대신 "정확 일치 블로킹 + 블록 내 k개 결정적
 선택"을 사용한다. City가 이미 가장 세밀한 지리 단위이고(Agency Code/Name은
@@ -19,7 +19,7 @@
    → 후보별 평균 차수·고립 노드·연결 성분 계산
    → outputs/graph_edge_comparison.csv에 append
 
---k로 차수 상한을 바꿔가며 재실행 가능(ablation). 06_train_gnn.py의
+--k로 차수 상한을 바꿔가며 재실행 가능(ablation). experiments/train_gnn.py의
 --k_neighbors가 여기서 만든 파일명과 맞물려 있으니 같이 바꿔야 한다.
 """
 import argparse

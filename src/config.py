@@ -30,7 +30,7 @@ os.environ["JOBLIB_TEMP_FOLDER"] = str(_JOBLIB_TMP)
 
 # ---- OpenMP DLL 충돌 회피 (Windows, torch/torch_geometric) ----
 # libiomp5md.dll 중복 로드로 torch import 시 OMP Error #15 발생.
-# 04_build_graph.py는 torch를 안 써서 미뤘고, 06_train_gnn.py부터 torch를
+# 04_build_graph.py는 torch를 안 써서 미뤘고, experiments/train_gnn.py부터 torch를
 # 처음 쓰므로 여기서 처리한다.
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
@@ -107,7 +107,7 @@ GEO_BLOCK_COLS = ["State", "City"]
 TEMPORAL_BLOCK_COLS = ["Year", "Month"]
 WEAPON_BLOCK_COLS = ["Weapon", "Victim Sex", "Victim Race"]
 
-# ---- GNN 학습 (06_train_gnn.py) 기본 하이퍼파라미터 ----
+# ---- GNN 학습 (experiments/train_gnn.py) 기본 하이퍼파라미터 ----
 # argparse로 개별 오버라이드 가능(ablation study용). 인자 없이 실행하면
 # 이 값들을 그대로 쓴다.
 # geo(State+City 블로킹)가 3종 중 유일하게 베이스라인을 4개 지표 모두에서
@@ -132,7 +132,7 @@ GNN_VAL_SIZE = 0.15        # train+val 풀 중 val 비율
 # 흔들려서, 단일 run 비교는 신뢰할 수 없기 때문. baseline은 결정적이라 1행.
 GNN_SEEDS = [42, 43, 44]
 
-# ---- 공정성 진단 (07_fairness.py / clear.fairness) ----
+# ---- 공정성 진단 (experiments/diagnose_fairness.py / clear.fairness) ----
 # 'Unknown'은 인구집단이 아니라 기록 누락 코드라 격차(max-min) 계산에서 뺀다.
 # 그룹별 지표 표에는 참고용으로 남긴다.
 FAIRNESS_UNKNOWN_LABEL = "Unknown"

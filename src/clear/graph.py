@@ -1,6 +1,6 @@
 """엣지 로딩·조합 — 04_build_graph.py가 저장한 .npy를 읽어 edge_index를 만든다.
 
-이전에는 geo_temporal(합집합) 같은 "엣지 대수"가 06_train_gnn.py:build_data
+이전에는 geo_temporal(합집합) 같은 "엣지 대수"가 experiments/train_gnn.py:build_data
 안에 섞여 있었다 — 엣지 구성 로직이 04(생성)와 06(조합) 두 곳에 나뉘어 있던
 셈이다. 조합 로직을 여기로 모아 04가 만든 산출물을 읽는 한 곳으로 둔다.
 """

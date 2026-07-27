@@ -1,5 +1,5 @@
 """
-07_fairness.py — 공정성 진단 CLI (예측 → **진단** 단계, week 3)
+experiments/diagnose_fairness.py — 공정성 진단 CLI (예측 → **진단** 단계, week 3)
 
 05/06이 저장한 test 예측 덤프(outputs/predictions_*.csv)를 읽어, 피해자 인종·성별
 그룹별로 검거 예측이 **체계적으로 불공평한지**를 측정한다. 계산은 전부
@@ -57,7 +57,7 @@ def main():
     paths = predictions.discover(args.models)
     if not paths:
         sys.exit("[에러] outputs/predictions_*.csv 없음. 먼저 실행: "
-                 "python 05_train_baseline.py / python 06_train_gnn.py")
+                 "python experiments/train_baseline.py / python experiments/train_gnn.py")
 
     dumps = {label: predictions.load(p) for label, p in paths.items()}
     test_idx = predictions.assert_same_test_set(dumps)

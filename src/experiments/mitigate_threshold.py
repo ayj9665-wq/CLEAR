@@ -1,7 +1,7 @@
 """
-08_mitigate.py — 완화기법(후처리) CLI (진단 → **처방** 단계, week 3)
+experiments/mitigate_threshold.py — 완화기법(후처리) CLI (진단 → **처방** 단계, week 3)
 
-07_fairness.py가 "모델이 격차를 키운다"를 보였다면, 여기서는 **얼마나 줄일 수 있고
+experiments/diagnose_fairness.py가 "모델이 격차를 키운다"를 보였다면, 여기서는 **얼마나 줄일 수 있고
 정확도를 얼마나 잃는가**를 잰다. 계산은 clear.mitigate에 있고 이 파일은 덤프 수집 →
 lambda 훑기 → CSV 저장만 한다.
 
@@ -14,7 +14,7 @@ lambda 훑기 → CSV 저장만 한다.
 
 임계값은 test를 층화 분할한 tune 절반에서 정하고 eval 절반에서만 평가한다 —
 같은 데이터에서 맞추고 재면 완화 효과가 낙관적으로 나오기 때문. 따라서 여기 나오는
-정확도는 07의 수치와 직접 비교하면 안 된다(평가 표본이 절반이고 다르다).
+정확도는 diagnose_fairness의 수치와 직접 비교하면 안 된다(평가 표본이 절반이고 다르다).
 lambda=0 행이 그 조건에서의 정당한 기준선이다.
 
 출력: outputs/mitigation_tradeoff.csv
@@ -26,12 +26,16 @@ lambda=0 행이 그 조건에서의 정당한 기준선이다.
 import argparse
 
 import numpy as np
-import pandas as pd
 
 import config as C
-from clear import mitigate, predictions
+from clear import mitigate, predictions, results
 
 SENS_ATTRS = [f"sens__{a}" for a in C.SENSITIVE_COLS]
+
+# 정한 노브(=결과의 identity)와, 적합이 만들어낸 값(=기록만)의 분리.
+# thresholds를 identity에 넣으면 같은 lambda를 재실행해도 표기 차이로 중복된다.
+PARAM_KEYS = ["criterion", "lambda"]
+NOTE_KEYS = ["groups", "thresholds"]
 
 
 def main():
@@ -57,6 +61,7 @@ def main():
           f"/ 그룹하한 {args.min_n}")
 
     out = []
+    group_set = f"named_n>={args.min_n}"
     for label, df in dumps.items():
         for attr in SENS_ATTRS:
             if attr not in df.columns:
@@ -67,7 +72,10 @@ def main():
                                      min_n=args.min_n, n_boot=args.n_boot)
                 res.insert(0, "attribute", name)
                 res.insert(0, "model", label)
-                out.append(res)
+                for _, r in res.iterrows():
+                    out += results.from_wide(r.to_dict(), "mitigate_threshold",
+                                             PARAM_KEYS, note_keys=NOTE_KEYS,
+                                             group_set=group_set)
 
                 base, full = res.iloc[0], res.iloc[-1]
                 # 기준이 겨냥한 격차를 찍는다(dp면 선택률, tpr이면 재현율).
@@ -80,10 +88,8 @@ def main():
                       f"최고 {best['acc_mcc']:.3f} @L={best['lambda']:.1f}) | "
                       f"{crit} 격차 {base[col]:.3f} -> {full[col]:.3f}")
 
-    df_out = pd.concat(out, ignore_index=True)
-    path = C.OUTPUT_DIR / "mitigation_tradeoff.csv"
-    df_out.to_csv(path, index=False, encoding="utf-8-sig")
-    print(f"\n[save] {path}  ({len(df_out)}행)")
+    path = results.write(out)
+    print(f"\n[save] {path}  (family=mitigate_threshold, {len(out)}행)")
     print("[해석] lambda를 키우면 격차는 줄고 정확도는 떨어진다. 두 모델의 곡선을 "
           "겹쳐 그려 '같은 공정성 수준에서 누가 더 정확한가'를 본다. 한 점끼리 "
           "비교하면 완화 세기가 달라 무의미하다.")

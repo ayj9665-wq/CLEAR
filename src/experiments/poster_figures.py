@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 import config as C
+from clear import results
 
 # ---- validated light-mode palette (dataviz skill reference instance) ---------
 SURFACE = "#fcfcfb"
@@ -125,25 +126,47 @@ def fig1_race_gap():
 #    their absolute MCC levels are not on the same scale (CLAUDE.md / report 10-4).
 # Both are blind geo GraphSAGE, White-vs-Black race gap.
 # ---------------------------------------------------------------------------
+def _curve(family, knob, filters=None):
+    """results.csv에서 (노브, MCC, 증폭비) 곡선 하나를 꺼낸다.
+
+    두 완화기법이 같은 테이블에 있으므로 읽는 코드도 한 벌이면 된다 — 예전에는
+    fairloss_tradeoff.csv와 mitigation_tradeoff.csv가 파일도 열 이름도 달라
+    (노브가 alpha / lambda) 각각 따로 읽었다.
+    """
+    df = results.read(family=family)
+    df = df[df["seed"].isna() & (df["attribute"] == "Victim Race")]
+
+    # 점을 유일하게 식별하는 것은 (model, params)다. tag가 아니다 — 후처리 완화는
+    # tag가 비어 있고 criterion·lambda로만 구분된다.
+    keys = ["model", "params"]
+    meta = df.drop_duplicates(keys)[keys].copy()
+    for name in [knob] + list((filters or {}).keys()):
+        meta[name] = results.param(meta, name)
+    for name, want in (filters or {}).items():
+        meta = meta[meta[name] == want]
+
+    vals = results.wide(df, index=keys,
+                        metrics=["mcc", "selection_rate_amplification"])
+    return meta.merge(vals, on=keys).sort_values(knob)
+
+
 def fig2_tradeoff():
-    # loss penalty (10_fairloss), beta=0 main curve. Restrict to the useful
+    # loss penalty (mitigate_loss), beta=0 main curve. Restrict to the useful
     # region alpha<=50: the report shows it stays a trade-off curve only there,
     # above which the penalty swamps the BCE term and MCC destabilizes (10-2).
-    fl_all = pd.read_csv(OUT / "fairloss_tradeoff.csv")
-    fl_all = fl_all[(fl_all.beta == 0) & (fl_all.attribute == "Victim Race")]
-    fl_base = fl_all.loc[fl_all.alpha == 0, "acc_mcc"].iloc[0]
-    fl = fl_all[fl_all.alpha <= 50].sort_values("alpha")
-    fl_amp = fl["dp_amplification"].to_numpy()
-    fl_dmcc = (fl["acc_mcc"] - fl_base).to_numpy() * 1000  # milli-MCC
+    fl_all = _curve("mitigate_loss", "alpha", {"beta": 0.0, "grad_clip": 0.0})
+    fl_base = fl_all.loc[fl_all.alpha == 0, "mcc"].iloc[0]
+    fl = fl_all[fl_all.alpha <= 50]
+    fl_amp = fl["selection_rate_amplification"].to_numpy()
+    fl_dmcc = (fl["mcc"] - fl_base).to_numpy() * 1000  # milli-MCC
     fl_alpha = fl["alpha"].to_numpy()
 
-    # post-processing (08_mitigate), demographic-parity criterion
-    mt = pd.read_csv(OUT / "mitigation_tradeoff.csv")
-    mt = mt[(mt.model == "graphsage_geo_blind") & (mt.criterion == "dp")
-            & (mt.attribute == "Victim Race")].sort_values("lambda")
-    mt_base = mt.loc[mt["lambda"] == 0, "acc_mcc"].iloc[0]
-    mt_amp = mt["dp_amplification"].to_numpy()
-    mt_dmcc = (mt["acc_mcc"] - mt_base).to_numpy() * 1000
+    # post-processing (mitigate_threshold), demographic-parity criterion
+    mt = _curve("mitigate_threshold", "lambda", {"criterion": "dp"})
+    mt = mt[mt["model"] == "graphsage_geo_blind"]
+    mt_base = mt.loc[mt["lambda"] == 0, "mcc"].iloc[0]
+    mt_amp = mt["selection_rate_amplification"].to_numpy()
+    mt_dmcc = (mt["mcc"] - mt_base).to_numpy() * 1000
 
     fig, ax = plt.subplots(figsize=(8.4, 6.0), dpi=200)
     _clean_axes(ax)

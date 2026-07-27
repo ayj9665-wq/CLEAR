@@ -1,9 +1,9 @@
-"""공용 데이터 로딩·분할 — 05_train_baseline.py와 06_train_gnn.py의 단일 출처.
+"""공용 데이터 로딩·분할 — experiments/train_baseline.py와 experiments/train_gnn.py의 단일 출처.
 
 이전 상태(이 모듈로 통합하기 전):
   - load_xy()가 두 스크립트에 복붙돼 있었고, bool→int8 캐스팅이 baseline
     쪽에만 있어 이미 미세하게 갈라져 있었다.
-  - test 분할은 06이 05의 train_test_split을 "같은 n·stratify·random_state로
+  - test 분할은 train_gnn이 train_baseline의 train_test_split을 "같은 n·stratify·random_state로
     다시 호출하면 같은 행이 나온다"는 불변식에 의존해 재현했다. 맞는 말이지만
     둘 중 한쪽 분할 로직이 바뀌면 에러 없이 조용히 어긋난다 — 비교의 최악
     실패 모드다.
@@ -50,15 +50,43 @@ def load_xy(blind=False):
         drop = [c for c in X.columns
                 if any(c.startswith(f"{p}=") for p in C.SENSITIVE_FEATURE_COLS)]
         X = X.drop(columns=drop)
+        _assert_blind(X, drop)
     X = X.astype({c: "int8" for c in X.columns if X[c].dtype == bool})
     return X, y
+
+
+def _assert_blind(X, dropped):
+    """blind=True가 실제로 민감속성을 뺐는지 검증. 조용한 no-op이 최악의 실패다.
+
+    위 drop 조건은 03_features.py의 원핫 구분자가 '='라는 규약에 의존한다. 그
+    규약이 바뀌면 drop이 빈 리스트가 되고 blind는 아무것도 안 하는 no-op이 되는데,
+    **에러 없이** 통과하므로 이후의 모든 blind 결과가 조용히 틀린다 — 그리고
+    "모델이 인종을 못 본다"는 문서와 실제가 어긋난 것이 이 프로젝트에서 실제로
+    가장 크게 틀렸던 항목이다(2026-07-24 이전 전 결과). 같은 종류의 드리프트를
+    두 번 겪지 않도록 여기서 막는다.
+
+    구분자와 무관하게 '접두어로 시작하는 열'이 남아 있는지로 검사하므로,
+    규약이 바뀌어도 통과하지 못한다.
+    """
+    if not dropped:
+        raise ValueError(
+            f"blind=True인데 X에서 뺀 민감속성 열이 없다. "
+            f"config.SENSITIVE_FEATURE_COLS={C.SENSITIVE_FEATURE_COLS}가 "
+            f"03_features.py의 원핫 열 이름과 안 맞는다(구분자 '=' 규약 확인). "
+            f"이대로면 --blind가 무해한 no-op이라 blind 결과가 전부 무효다.")
+    leaked = [c for c in X.columns
+              if any(c.startswith(p) for p in C.SENSITIVE_FEATURE_COLS)]
+    if leaked:
+        raise ValueError(
+            f"blind=True인데 민감속성 열이 X에 남았다: {leaked}. "
+            f"직접 경로가 열려 있으면 '그래프가 우회 경로인가'라는 질문 자체가 성립하지 않는다.")
 
 
 def load_sensitive():
     """features.parquet → sens__* 원본(비인코딩) DataFrame, X/y와 같은 행 순서.
 
     load_xy()가 학습 입력에서 떼어낸 민감속성(sens__Victim Race/Sex)을 그대로
-    돌려준다. 공정성 진단(07)에서 test 인덱스로 iloc해 예측과 join하기 위한 것 —
+    돌려준다. 공정성 진단(diagnose_fairness)에서 test 인덱스로 iloc해 예측과 join하기 위한 것 —
     get_split이 돌려주는 인덱스는 이 DataFrame 행 위치와 그대로 대응한다.
     """
     df = pd.read_parquet(C.PROCESSED_DIR / "features.parquet")
@@ -67,7 +95,7 @@ def load_sensitive():
 
 
 def get_split(y, *, test_size=None, val_size=None, random_state=None):
-    """층화 분할 인덱스를 결정적으로 계산. 05·06 공통 출처.
+    """층화 분할 인덱스를 결정적으로 계산. train_baseline·train_gnn 공통 출처.
 
     test는 첫 분할에서만 나오고 val_size와 무관하므로, baseline과 GNN이
     (그리고 --val_size를 바꿔도) 항상 동일한 test 집합을 쓴다 — 비교 가능성이

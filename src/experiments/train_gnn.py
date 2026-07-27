@@ -1,7 +1,7 @@
 """
-06_train_gnn.py — GraphSAGE 학습 CLI (얇은 래퍼)
+experiments/train_gnn.py — GraphSAGE 학습 CLI (얇은 래퍼)
 
-모델·학습 로직은 clear/gnn.py에 있다(ablation_sweep.py가 subprocess 대신
+모델·학습 로직은 clear/gnn.py에 있다(experiments/ablation.py가 subprocess 대신
 in-process로 재사용하기 위함). 이 파일은 인자 파싱 → 데이터 로드 → 분할 →
 config별 seed 반복 학습 → 원장(outputs/metrics.csv) append만 담당한다.
 
@@ -10,14 +10,14 @@ ablation 결과로 승격된 값)와 config.GNN_SEEDS로 학습한다. 하이퍼
 전부 argparse로 오버라이드 가능(개별 실험용).
 
 평가지표: AUC / MCC / F1 / Sensitivity / Specificity (+ 논문 대조용 Balanced
-Accuracy / Precision) — 05_train_baseline.py와 동일 체계(clear.metrics). MCC를
+Accuracy / Precision) — experiments/train_baseline.py와 동일 체계(clear.metrics). MCC를
 대표 지표로 val 조기 종료·순위에 쓴다.
 
 기본으로 edge_type별 test 노드 예측(seed 평균 proba + 민감속성)을
 outputs/predictions_graphsage_{edge}.csv로 저장한다(--no_dump_predictions로 끔) —
-07_fairness.py의 그룹별 공정성 진단 입력.
+experiments/diagnose_fairness.py의 그룹별 공정성 진단 입력.
 
-seed 반복: split은 config.RANDOM_STATE로 고정(=05와 동일 test 집합, 비교
+seed 반복: split은 config.RANDOM_STATE로 고정(=train_baseline와 동일 test 집합, 비교
 가능성 유지)하고 torch seed만 --seeds로 바꿔 학습 분산(mean±std)을 남긴다.
 임계값 의존 지표는 run마다 ±3~4점 흔들리므로 단일 run 비교는 신뢰 불가.
 
@@ -32,14 +32,10 @@ import argparse
 
 import config as C   # torch import 전에 필요 (KMP_DUPLICATE_LIB_OK 등 env 설정)
 from clear.data import load_xy
-from clear.gnn import prepare, train_eval, dump_test_predictions
-from clear import ledger
+from clear.gnn import prepare, train_eval, dump_test_predictions, parse_seeds
+from clear import predictions, results
 
 import torch
-
-
-def _seeds(s):
-    return [int(x) for x in str(s).split(",") if x != ""]
 
 
 def main():
@@ -49,7 +45,7 @@ def main():
                          default=C.GNN_DEFAULT_EDGE_TYPE)
     parser.add_argument("--k_neighbors", type=int, default=C.K_NEIGHBORS,
                          help="04_build_graph.py --k로 만든 그래프 중 어느 것을 쓸지 선택")
-    parser.add_argument("--seeds", type=_seeds, default=C.GNN_SEEDS,
+    parser.add_argument("--seeds", type=parse_seeds, default=C.GNN_SEEDS,
                          help="쉼표구분 torch seed 목록(예: 42,43,44). split은 고정.")
     parser.add_argument("--hidden_dim", type=int, default=C.GNN_HIDDEN_DIM)
     parser.add_argument("--num_layers", type=int, default=C.GNN_NUM_LAYERS)
@@ -77,7 +73,7 @@ def main():
 
     y_t, train_t, val_t, test_t = prepare(X, y, args.val_size, device)
     print(f"[split] train {len(train_t):,} / val {len(val_t):,} / test {len(test_t):,} "
-          f"(test는 05_train_baseline.py와 동일 집합)")
+          f"(test는 experiments/train_baseline.py와 동일 집합)")
 
     hp = dict(
         hidden_dim=args.hidden_dim, num_layers=args.num_layers, dropout=args.dropout,
@@ -91,12 +87,13 @@ def main():
     tag = args.tag or suffix.lstrip("_")
     for edge_type in edge_types:
         rows = train_eval(edge_type, args.k_neighbors, hp, args.seeds, tag,
-                          X, y_t, train_t, val_t, test_t, device, ledger=ledger)
+                          X, y_t, train_t, val_t, test_t, device,
+                          family="train", blind=args.blind)
         if args.dump_predictions:
-            pred_path = C.OUTPUT_DIR / f"predictions_graphsage_{edge_type}{suffix}.csv"
+            pred_path = predictions.path_for("graphsage", f"{edge_type}{suffix}")
             dump_test_predictions(rows, test_idx, y, pred_path)
             print(f"[save] {pred_path} (test 노드 {len(test_idx):,}개, seed 평균 proba)")
-    print(f"[save] {ledger.LEDGER_PATH} (append, {len(edge_types)}×{len(args.seeds)}행)")
+    print(f"[save] {results.results_path()} (family=train, {len(edge_types)}×{len(args.seeds)}회)")
 
 
 if __name__ == "__main__":

@@ -1,10 +1,15 @@
-"""GraphSAGE 모델·학습 로직 — 06_train_gnn.py와 ablation_sweep.py의 공통 출처.
+"""GraphSAGE 모델·학습 로직 — experiments/train_gnn.py와 experiments/ablation.py의 공통 출처.
 
-이전에는 이 로직이 전부 06_train_gnn.py에 있었고, ablation_sweep.py는 숫자로
-시작하는 그 파일을 import할 수 없어(문법 오류) subprocess로 Python을 config마다
-다시 띄웠다 — 매번 torch를 재import하고 parquet를 다시 읽었다. 학습 로직을
-importable한 여기로 옮기면 ablation이 `from clear.gnn import ...`로 in-process
-호출해 데이터를 한 번만 로드한다. 06_train_gnn.py는 얇은 CLI 래퍼가 된다.
+이전에는 이 로직이 전부 학습 스크립트(당시 이름 `06_train_gnn.py`)에 있었고,
+ablation은 숫자로 시작하는 그 파일을 import할 수 없어(문법 오류) subprocess로
+Python을 config마다 다시 띄웠다 — 매번 torch를 재import하고 parquet를 다시
+읽었다. 학습 로직을 importable한 여기로 옮기면 ablation이
+`from clear.gnn import ...`로 in-process 호출해 데이터를 한 번만 로드한다.
+experiments/train_gnn.py는 얇은 CLI 래퍼가 된다.
+
+(스크립트 번호는 그 뒤 없앴다 — experiments/__init__.py 참고. 이 모듈이 존재하는
+이유였던 import 제약 자체는 사라졌지만, 여기 있는 로직은 이제 train_gnn·ablation·
+sweep 셋이 공유하므로 그대로 둔다.)
 
 seed 반복 설계: split은 config.RANDOM_STATE로 고정하고(=baseline과 동일 test
 집합, 비교 가능성 유지) torch seed만 바꿔 학습 분산을 측정한다. GPU scatter
@@ -20,6 +25,7 @@ import config as C   # torch import 전에 필요 (KMP_DUPLICATE_LIB_OK 등 env 
 from clear.data import get_split
 from clear.graph import build_edge_index
 from clear.metrics import evaluate
+from clear import results
 
 import torch
 import torch.nn as nn
@@ -50,6 +56,30 @@ class GraphSAGE(nn.Module):
         return self.head(x)
 
 
+def default_hp():
+    """config.py 기본값의 하이퍼파라미터 한 벌. train_one에 그대로 **전개된다.
+
+    experiments/ablation.py와 clear.sweep(mitigate_graph·mitigate_loss)이 공유한다 — 둘 다 "기본값에서
+    출발"이 전제라, 따로 적어두면 config를 바꿨을 때 한쪽만 따라가서 두 실험이
+    말없이 다른 기준점을 쓰게 된다. experiments/train_gnn.py는 이걸 안 쓴다(그쪽은
+    argparse 값이 출처이고, 기본값은 add_argument의 default가 이미 config다).
+
+    grad_clip은 뺐다 — train_one의 기본값(0.0)이 곧 '안 씀'이고, 10만 노출한다.
+    """
+    return dict(
+        hidden_dim=C.GNN_HIDDEN_DIM, num_layers=C.GNN_NUM_LAYERS,
+        dropout=C.GNN_DROPOUT, lr=C.GNN_LR, weight_decay=C.GNN_WEIGHT_DECAY,
+        aggr=C.GNN_AGGR, max_epochs=C.GNN_MAX_EPOCHS, patience=C.GNN_PATIENCE,
+        val_size=C.GNN_VAL_SIZE,
+    )
+
+
+def parse_seeds(s):
+    """'42,43,44' -> [42, 43, 44]. 06과 clear.sweep(mitigate_graph·mitigate_loss)이 공유하는 argparse type=.
+    seed 규약(split은 고정, torch seed만 변주)이 이 모듈의 소관이라 여기 둔다."""
+    return [int(x) for x in str(s).split(",") if x != ""]
+
+
 def build_data(X, edge_type, k, device):
     edges = build_edge_index(edge_type, k)
     x = torch.tensor(X.values.astype(np.float32))
@@ -71,7 +101,7 @@ def prepare(X, y, val_size, device):
 def _group_gap(pred, codes_np):
     """val 노드의 그룹 간 선택률 max-min. codes_np가 None이면 nan(계산 안 함).
 
-    07이 재는 selection_rate 격차와 같은 정의를, 조기 종료가 쓸 수 있게 val에서
+    diagnose_fairness이 재는 selection_rate 격차와 같은 정의를, 조기 종료가 쓸 수 있게 val에서
     계산한 것이다. -1(대상 외)은 제외한다.
     """
     if codes_np is None:
@@ -87,11 +117,11 @@ def fairness_penalty(proba, codes):
     codes: 노드별 그룹 인덱스, -1은 벌점에서 제외(Unknown 등). 그룹이 둘이면
     이 값은 두 그룹 평균 차이의 제곱에 비례하므로, "선택률 격차를 줄여라"를
     그대로 손실에 넣은 것이 된다. 하드 예측(임계값)은 미분이 안 되므로 시그모이드
-    확률의 평균을 쓴다 — 07이 재는 selection_rate의 매끄러운 대리값이다.
+    확률의 평균을 쓴다 — diagnose_fairness이 재는 selection_rate의 매끄러운 대리값이다.
 
     벌점은 **학습 노드에서만** 계산한다(호출부가 train 인덱스를 넘긴다). 민감속성이
     학습 시점에만 필요하고 추론 시점엔 불필요하다는 게 이 방식의 요점이다 —
-    후처리(08)가 배포 시 인종을 알아야 하는 제약을 피한다.
+    후처리(mitigate_threshold)가 배포 시 인종을 알아야 하는 제약을 피한다.
     """
     keep = codes >= 0
     if not torch.any(keep):
@@ -186,7 +216,7 @@ def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neigh
         test_proba = torch.sigmoid(out[test_idx]).cpu().numpy()
     y_test = y[test_idx].cpu().numpy().astype(int)
 
-    metric_vals = evaluate(y_test, test_proba)   # 05와 동일 지표·동일 0.5 임계값
+    metric_vals = evaluate(y_test, test_proba)   # train_baseline와 동일 지표·동일 0.5 임계값
     print(f"[eval:{edge_type}/seed{seed}] " + "  ".join(f"{k}={v:.4f}" for k, v in metric_vals.items()))
 
     return {
@@ -201,8 +231,8 @@ def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neigh
         "best_epoch": best_epoch, "train_seconds": round(train_seconds, 1),
         "n_params": sum(p.numel() for p in model.parameters()),
         **metric_vals,
-        # 공정성 진단(07)용 원자료. '_' 접두 키는 ledger.append의 reindex(columns=
-        # LEDGER_COLS)에서 자동으로 떨어져 원장 CSV엔 안 들어간다.
+        # 공정성 진단(diagnose_fairness)용 원자료. '_' 접두 키는 clear.results가
+        # canonical 지표 목록만 골라 담으므로 results.csv엔 안 들어간다.
         "_test_proba": test_proba,
     }
 
@@ -211,8 +241,8 @@ def dump_test_predictions(rows, test_idx, y, path):
     """seed별 test_proba를 평균해 test 노드별 예측을 CSV로 저장(공정성 진단 07용).
 
     GNN 사정(seed 평균)만 여기서 처리하고, 덤프 형식 자체는 clear.predictions가
-    정의한다 — 05_train_baseline.py(단일 결정적 예측)와 08(완화된 예측)이 같은
-    형식을 써야 07이 셋을 나란히 진단할 수 있기 때문.
+    정의한다 — experiments/train_baseline.py(단일 결정적 예측)와 08(완화된 예측)이 같은
+    형식을 써야 diagnose_fairness이 셋을 나란히 진단할 수 있기 때문.
 
     rows: train_eval 반환(각 dict에 '_test_proba'). test_idx: 원본 행 위치(np array,
     features.parquet 행에 대응 → load_sensitive()와 join 가능). 모든 seed가 동일 test
@@ -225,16 +255,31 @@ def dump_test_predictions(rows, test_idx, y, path):
 
 
 def train_eval(edge_type, k_neighbors, hp, seeds, tag, X, y_t, train_t, val_t, test_t,
-               device, ledger=None):
+               device, family=None, data=None, attribute=None, blind=None, **extra):
     """한 config를 여러 seed로 학습. edge 그래프는 한 번만 로드해 재사용.
-    각 seed 행을 ledger에 append(넘겨주면)하고 행 리스트를 반환한다."""
-    data = build_data(X, edge_type, k_neighbors, device)
-    print(f"[graph:{edge_type}] 엣지 {data.edge_index.shape[1]:,}개(방향), k={k_neighbors}")
-    rows = []
+    seed별 결과를 outputs/results.csv에 기록(family를 주면)하고 행 리스트를 반환한다.
+
+    data       이미 만든 그래프를 쓰려면 넘긴다. mitigate_graph가 동종 엣지를 제거한
+               그래프를, mitigate_loss가 alpha 격자 내내 재사용할 그래프를 이렇게
+               넘긴다. None이면 여기서 edge_type/k_neighbors로 로드한다(train_gnn의 경로).
+    family     결과 기록 계열(train / ablation / mitigate_graph / mitigate_loss).
+               None이면 기록하지 않는다.
+    extra      train_one에 그대로 전달(mitigate_loss의 fair_alpha/fair_codes/fair_beta).
+
+    data·extra가 없던 시절 mitigate_graph·mitigate_loss는 이 함수를 못 쓰고 seed
+    루프를 각자 재구현했다 — "공용 함수가 정작 자기 호출부를 못 덮는" 상태였다.
+    """
+    if data is None:
+        data = build_data(X, edge_type, k_neighbors, device)
+        print(f"[graph:{edge_type}] 엣지 {data.edge_index.shape[1]:,}개(방향), k={k_neighbors}")
+    rows, recorded = [], []
     for seed in seeds:
         row = train_one(edge_type, data, y_t, train_t, val_t, test_t,
-                        seed=seed, k_neighbors=k_neighbors, tag=tag, device=device, **hp)
-        if ledger is not None:
-            ledger.append(row)
+                        seed=seed, k_neighbors=k_neighbors, tag=tag, device=device,
+                        **hp, **extra)
+        if family is not None:
+            recorded += results.from_run(row, family, attribute=attribute, blind=blind)
         rows.append(row)
+    if recorded:
+        results.write(recorded)
     return rows

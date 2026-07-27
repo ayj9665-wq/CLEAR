@@ -1,7 +1,7 @@
 # 모델 보고서 — Logistic Regression (성능 하한)
 
 - 작성자: 안윤지 · 작성일: 2026-07-23
-- 파이프라인 위치: [05_train_baseline.py](../src/05_train_baseline.py) (`model=logreg`)
+- 파이프라인 위치: [experiments/train_baseline.py](../src/experiments/train_baseline.py) (`model=logreg`)
 - 벤치마크/캐비엇 공통 문서: [모델벤치마크_선행연구비교.md](모델벤치마크_선행연구비교.md)
 
 ## 1. 역할 — "성능 하한(floor)"
@@ -28,7 +28,7 @@ CLEAR에서의 역할은 이기는 모델이 아니라 **바닥선**이다: "노
 
 - 대표 스칼라는 **MCC(0.233)** — ~32/68 불균형에서 정확도보다 신뢰할 수 있음.
 - XGBoost(MCC 0.274) 대비 확실히 낮고, GraphSAGE(0.287)와는 더 벌어짐 → **하한 역할
-  충실**. Balanced Acc·Precision은 논문 대조용 부가지표(§4). 출처: `outputs/metrics.csv`.
+  충실**. Balanced Acc·Precision은 논문 대조용 부가지표(§4). 출처: `outputs/results.csv`.
 
 ## 4. 선행연구 대비 (공유지표 Balanced Acc · Precision)
 

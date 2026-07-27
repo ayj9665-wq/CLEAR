@@ -1,7 +1,7 @@
 """
-edge_homophily.py — 엣지가 민감속성의 프록시인지 측정 (번호 없는 유틸, eda.py 티어)
+experiments/edge_homophily.py — 엣지가 민감속성의 프록시인지 측정 (번호 없는 유틸, eda.py 티어)
 
-동기: 07_fairness.py가 GraphSAGE(geo)의 공정성 격차 증폭이 XGBoost보다 크다는
+동기: experiments/diagnose_fairness.py가 GraphSAGE(geo)의 공정성 격차 증폭이 XGBoost보다 크다는
 결과를 냈다(성별 +0.11배, 짝지은 부트스트랩 기준 유의). 그렇다면 **왜** 그런가.
 가설: 노드 특성이 아니라 **엣지 자체가 민감속성과 상관**돼 있어서, 메시지 전달이
 이웃의 인종·성별 정보를 노드 표현으로 끌어온다.

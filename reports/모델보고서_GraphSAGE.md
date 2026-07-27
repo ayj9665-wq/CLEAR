@@ -1,7 +1,7 @@
 # 모델 보고서 — GraphSAGE (그래프 모델)
 
 - 작성자: 안윤지 · 작성일: 2026-07-23
-- 파이프라인 위치: [06_train_gnn.py](../src/06_train_gnn.py) (`model=graphsage`), 모델/학습은 `clear.gnn`
+- 파이프라인 위치: [experiments/train_gnn.py](../src/experiments/train_gnn.py) (`model=graphsage`), 모델/학습은 `clear.gnn`
 - 벤치마크/캐비엇 공통 문서: [모델벤치마크_선행연구비교.md](모델벤치마크_선행연구비교.md)
 
 ## 1. 역할 — "그래프가 도움이 되는가"의 본체
@@ -34,7 +34,7 @@ GraphSAGE는 사건을 노드로, **지역·시기·수법 유사도로 건 엣�
   **신호로 인정**.
 - **주의**: F1/Sensitivity의 GNN>baseline 순서는 seed 노이즈(Sens std ~0.008~0.02)
   **안**이라 승리로 주장하지 않음 — seed 반복을 넣은 이유가 바로 이 착시를 드러내기
-  위함. 출처: `outputs/metrics.csv` / `clear.ledger.summarize`.
+  위함. 출처: `outputs/results.csv` / `clear.results.summarize`.
 
 ## 4. 선행연구 대비 (공유지표 Balanced Acc · Precision)
 

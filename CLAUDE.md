@@ -19,43 +19,57 @@ Written docs with the full design rationale (Korean), in `reports/`:
 
 ## Commands
 
+Everything runs from `src/`. The numbered scripts at the root are the data
+pipeline and **must run in order**; everything under `experiments/` reads the
+prepared artifacts and has **no order among itself**, so those run as modules.
+
 ```bash
 pip install -r requirements.txt
 cd src
+
+# --- data pipeline (ordered; each stage reads what the previous one wrote) ---
 python 01_clean.py            # raw CSV -> data/processed/clean.parquet
 python 02_sample.py           # -> data/processed/sample.parquet
 python 03_features.py         # -> data/processed/features.parquet
-python eda.py                 # -> outputs/eda_*.csv, outputs/eda_*.png
-python 05_train_baseline.py   # -> outputs/metrics.csv (shared ledger, appends), outputs/baseline_xgb_top_features.csv, outputs/predictions_{logreg,xgboost}.csv
-python 04_build_graph.py            # -> data/processed/graph/edges_{geo,temporal,weapon}_k{k}.npy (k=config.K_NEIGHBORS)
+python 04_build_graph.py      # -> data/processed/graph/edges_{geo,temporal,weapon}_k{k}.npy (k=config.K_NEIGHBORS)
 python 04_build_graph.py --k 20     # rebuild at a different degree cap (needed before --k_neighbors 20 below works)
-python 06_train_gnn.py              # -> outputs/metrics.csv (appends; geo only, one row per config.GNN_SEEDS seed)
-python 06_train_gnn.py --edge_type all                                   # train geo+temporal+weapon for comparison
-python 06_train_gnn.py --edge_type geo --hidden_dim 128 --tag my_sweep   # any hyperparam overridable via CLI
-python 06_train_gnn.py --edge_type geo --k_neighbors 20                  # use a --k 20 graph built above
-python 06_train_gnn.py --edge_type geo --seeds 42,43,44                  # torch seeds to repeat over (split stays fixed)
-python 06_train_gnn.py --edge_type geo_temporal                          # union of geo+temporal edges
-python ablation_sweep.py            # in-process one-factor-at-a-time sweep; mean±std over config.GNN_SEEDS
-python 07_fairness.py               # diagnoses EVERY outputs/predictions_*.csv found -> fairness_group_metrics.csv + fairness_gaps.csv
-python 07_fairness.py --models graphsage_geo xgboost   # restrict to specific dumps
-python 07_fairness.py --min_n 5000 --n_boot 2000       # stricter group floor / more bootstrap reps
-python 05_train_baseline.py --blind   # same, but with race/sex/ethnicity dummies dropped from X
-python 06_train_gnn.py --blind        # ditto (graph unchanged) -> predictions_graphsage_geo_blind.csv
-python edge_homophily.py              # -> outputs/edge_homophily.csv (are edges a sensitive-attribute proxy?)
-python 08_mitigate.py                 # -> outputs/mitigation_tradeoff.csv (group-wise threshold sweep, every dump)
-python 08_mitigate.py --criteria tpr --steps 21 --min_n 1000   # equalize TPR instead, finer grid, looser group floor
-python 09_fairgraph.py                # -> outputs/fairgraph_tradeoff.csv (drop same-race edges + matched random control)
-python 10_fairloss.py                 # -> outputs/fairloss_tradeoff.csv (fairness penalty in the training loss)
-python 10_fairloss.py --beta 1.0       # early-stop on val MCC - beta*val gap instead of val MCC alone
-python 10_fairloss.py --alphas 0 25 50 75 --seeds 42,43,44,45  # finer alpha grid near the useful range
+
+# --- experiments (unordered; all write outputs/results.csv) ------------------
+python -m experiments.eda                 # -> outputs/eda_*.csv, outputs/eda_*.png
+python -m experiments.train_baseline      # -> results.csv (family=train), baseline_xgb_top_features.csv, predictions/{logreg,xgboost}.csv
+python -m experiments.train_gnn           # -> results.csv (family=train; geo only, one row per config.GNN_SEEDS seed)
+python -m experiments.train_gnn --edge_type all                                 # train geo+temporal+weapon for comparison
+python -m experiments.train_gnn --edge_type geo --hidden_dim 128 --tag my_sweep # any hyperparam overridable via CLI
+python -m experiments.train_gnn --edge_type geo --k_neighbors 20                # use a --k 20 graph built above
+python -m experiments.train_gnn --edge_type geo --seeds 42,43,44                # torch seeds to repeat over (split stays fixed)
+python -m experiments.train_gnn --edge_type geo_temporal                        # union of geo+temporal edges
+python -m experiments.train_baseline --blind   # race/sex/ethnicity dummies dropped from X
+python -m experiments.train_gnn --blind        # ditto (graph unchanged) -> predictions_graphsage_geo_blind.csv
+
+python -m experiments.ablation            # in-process one-factor-at-a-time sweep; mean±std over config.GNN_SEEDS
+python -m experiments.ablation --dry_run  # list the configs it would train (no training, no result writes)
+python -m experiments.ablation --dims lr num_layers   # sweep only these axes
+
+python -m experiments.diagnose_fairness   # diagnoses EVERY dump in outputs/predictions/ -> fairness_{group_metrics,gaps,model_contrasts}.csv
+python -m experiments.diagnose_fairness --models graphsage_geo xgboost   # restrict to specific dumps
+python -m experiments.diagnose_fairness --min_n 5000 --n_boot 2000       # stricter group floor / more bootstrap reps
+python -m experiments.edge_homophily      # -> outputs/edge_homophily.csv (are edges a sensitive-attribute proxy?)
+
+python -m experiments.mitigate_threshold  # -> results.csv (family=mitigate_threshold; group-wise threshold sweep, every dump)
+python -m experiments.mitigate_threshold --criteria tpr --steps 21 --min_n 1000   # equalize TPR instead, finer grid, looser group floor
+python -m experiments.mitigate_graph      # -> results.csv (family=mitigate_graph; drop same-race edges + matched random control)
+python -m experiments.mitigate_loss       # -> results.csv (family=mitigate_loss; fairness penalty in the training loss)
+python -m experiments.mitigate_loss --beta 1.0                              # early-stop on val MCC - beta*val gap instead of val MCC alone
+python -m experiments.mitigate_loss --alphas 0 25 50 75 --seeds 42,43,44,45 # finer alpha grid near the useful range
+
+python -m experiments.poster_figures      # -> outputs/poster_fig{1,2}_*.png (reads result CSVs only, no retraining)
 ```
 
-Scripts must run from `src/` and in this order — each stage reads the parquet
-the previous stage wrote (see `config.py` paths). `04_build_graph.py` only
-needs `02`/`03`'s output, not `05`; it's listed last above because it and
-`06_train_gnn.py` were built after `05` despite the lower number (see
-numbering-gap note below). There is no test suite; there is no build/lint
-step configured.
+There is no test suite; there is no build/lint step configured.
+
+`migrate_results.py` at `src/` root is a one-time (re-runnable) converter from
+the pre-unification result CSVs to `outputs/results.csv`; it has already been
+run and its inputs are preserved in `outputs/legacy/`.
 
 ## Architecture
 
@@ -64,34 +78,56 @@ the single source of truth for paths, target encoding, column lists, and
 hyperparameters (random state, split ratios, CV folds). When changing any of
 these, edit `config.py` rather than a script.
 
-**Numbered scripts are thin stages; shared logic lives in the `clear/`
-package.** Each `NN_*.py` file is a standalone pipeline stage that reads a
-parquet (or `.npy`) from `data/processed/`, transforms it, and writes the next
-artifact. A leading digit isn't a valid Python identifier, so
-`import 05_train_baseline` simply doesn't work — which is exactly *why* logic
-that two stages must share can't live in a numbered file. That shared logic
-lives in `src/clear/` (a normal importable package): `clear.data` (`load_xy`,
-`get_split`), `clear.metrics` (`evaluate` — the one AUC/MCC/F1/Sens/Spec
-definition), `clear.graph` (edge loading + `geo_temporal`-style unions),
-`clear.gnn` (the GraphSAGE model + training loop), `clear.ledger` (the shared
-`outputs/metrics.csv` log), `clear.predictions` (the test-prediction dump
-format that hands off from training to diagnosis), `clear.fairness` (group
-metrics, gaps, bootstrap CIs), `clear.mitigate` (group-wise thresholds),
-`clear.fairgraph` (homophilous-edge dropping). The numbered scripts (`05`–`10`)
-and the unnumbered `ablation_sweep.py`/`edge_homophily.py` are thin CLIs over
-`clear/`; `config.py` still
-holds all paths/constants. This replaced an earlier state where `load_xy`,
-the metric block, and the split were copy-pasted across `05`/`06` and kept in
-sync by hand. `05_train_baseline.py` was built before
-`04_build_graph.py`/`06_train_gnn.py` despite the lower number: it's the
+**Two tiers: an ordered pipeline, and an unordered experiment surface.**
+`src/01_clean.py` … `src/04_build_graph.py` are the pipeline — each reads what
+the previous one wrote, so the numbers encode a real dependency and they stay.
+Everything in `src/experiments/` reads `features.parquet` + `edges_*.npy` and
+writes to `outputs/`; **none of them depend on each other.**
+
+Those experiment files used to be numbered `05`–`10` too, and that was wrong in
+two ways. The numbers encoded *authorship order*, not dependency — you can run
+`mitigate_loss` without `mitigate_threshold`, and `mitigate_graph` is a failed
+branch rather than a prerequisite. And a leading digit isn't a valid Python
+identifier, so `import 05_train_baseline` was a syntax error: scripts physically
+could not share code with each other, which pushed every shared line into
+`clear/` or, when that didn't happen, into copy-paste. They are now plain
+modules run as `python -m experiments.train_gnn` (`-m` puts the CWD on
+`sys.path`, so `config`/`clear` resolve when run from `src/`). Old number → new
+name: `05` train_baseline, `06` train_gnn, `07` diagnose_fairness,
+`08` mitigate_threshold, `09` mitigate_graph, `10` mitigate_loss,
+`ablation_sweep` → `ablation`.
+
+The pipeline scripts stayed at `src/` root rather than moving into a
+`pipeline/` package: leading digits block `python -m`, so a subpackage would
+need a `sys.path` shim in every file — reintroducing exactly the per-file
+boilerplate this refactor removes — and buys nothing, since `01`–`04` never
+import each other.
+
+**Shared logic lives in `src/clear/`** (a normal importable package):
+`clear.data` (`load_xy`, `get_split`), `clear.metrics` (`evaluate` — the one
+7-metric definition), `clear.graph` (edge loading + `geo_temporal`-style
+unions), `clear.gnn` (the GraphSAGE model + training loop), `clear.results`
+(the one result schema, `outputs/results.csv`), `clear.predictions` (the
+test-prediction dump format that hands off from training to diagnosis),
+`clear.fairness` (group metrics, gaps, bootstrap CIs), `clear.mitigate`
+(group-wise thresholds), `clear.fairgraph` (homophilous-edge dropping),
+`clear.sweep` (the mitigation sweep harness `mitigate_graph`/`mitigate_loss`
+share). The experiment scripts are thin CLIs over `clear/`; `config.py` holds
+all paths/constants. The package originally existed because of the import
+constraint above; it stays because its modules genuinely have multiple callers
+(`clear.metrics` 7, `clear.predictions` 7, `clear.data` 6). The rule for what
+belongs there is **two or more callers** — single-caller computation stays in
+its script.
+
+`train_baseline` was written before `04_build_graph`/`train_gnn`: it's the
 pre-graph performance floor (flat XGBoost/LogReg) the GNN has to beat, so it
-needed to exist first. Numbering is now contiguous through `10`: `07` diagnoses,
-and the prescribe stage is three scripts because the first two answers were
-incomplete — `08` post-processes thresholds (works, but needs the attribute at
-decision time), `09` rewires edges (**fails**, and the failure is what located
-the real leak), `10` penalises the gap in the training loss (works, no
-decision-time attribute). Read them in that order; each exists because of what
-the previous one could not do.
+needed to exist first. The prescribe stage is three scripts because the first
+two answers were incomplete — `mitigate_threshold` post-processes thresholds
+(works, but needs the attribute at decision time), `mitigate_graph` rewires
+edges (**fails**, and the failure is what located the real leak),
+`mitigate_loss` penalises the gap in the training loss (works, no decision-time
+attribute). Read them in that order; each exists because of what the previous
+one could not do.
 
 ```
 dataset/kaggle_homicide_Reports_1980_2014.csv  (not in git, ~638k rows)
@@ -100,19 +136,19 @@ dataset/kaggle_homicide_Reports_1980_2014.csv  (not in git, ~638k rows)
   -> 03_features.py 5-yr age bins, decade bins, full one-hot; *copies* race/sex
                      off as sens__* for fairness work — the one-hot dummies of the
                      same columns stay in X unless load_xy(blind=True)
-  -> eda.py / 05_train_baseline.py       (read features.parquet or sample.parquet;
-                                           05 -> outputs/predictions_{logreg,xgboost}[_blind].csv)
+  -> eda.py / experiments/train_baseline.py       (read features.parquet or sample.parquet;
+                                           -> outputs/predictions/{logreg,xgboost}[_blind].csv)
   -> 04_build_graph.py                   (reads sample.parquet + features.parquet ->
                                            data/processed/graph/edges_{geo,temporal,weapon}.npy)
-  -> 06_train_gnn.py                     (reads features.parquet + edges_*.npy ->
-                                           outputs/predictions_graphsage_{edge}[_blind].csv)
-  -> 07_fairness.py                      (reads every prediction dump ->
+  -> experiments/train_gnn.py                     (reads features.parquet + edges_*.npy ->
+                                           outputs/predictions/graphsage_{edge}[_blind].csv)
+  -> experiments/diagnose_fairness.py                      (reads every prediction dump ->
                                            outputs/fairness_{group_metrics,gaps,model_contrasts}.csv)
-     edge_homophily.py                   (reads edges_*.npy + sens__* ->
+     experiments/edge_homophily.py                   (reads edges_*.npy + sens__* ->
                                            outputs/edge_homophily.csv)
-  -> 08_mitigate.py                      (reads every dump -> outputs/mitigation_tradeoff.csv)
-     09_fairgraph.py                     (edges + sens__* -> retrains -> fairgraph_tradeoff.csv)
-     10_fairloss.py                      (penalty in the loss -> fairloss_tradeoff.csv)
+  -> experiments/mitigate_threshold.py  (reads every dump -> results.csv family=mitigate_threshold)
+     experiments/mitigate_graph.py      (edges + sens__* -> retrains -> family=mitigate_graph)
+     experiments/mitigate_loss.py       (penalty in the loss -> family=mitigate_loss)
 ```
 
 **Graph construction (`04_build_graph.py`) uses blocking, not literal
@@ -128,7 +164,7 @@ across process runs) to avoid an O(n²) blowup on huge blocks (e.g. LA alone is
 ~44k rows). Edge arrays are stored pre-symmetrized (both `(i,j)` and `(j,i)`
 present) — already the format PyG's `edge_index` wants directly.
 
-**`05` and `06` share one test split via `clear.data.get_split`**, so
+**`train_baseline` and `train_gnn` share one test split via `clear.data.get_split`**, so
 GraphSAGE's test metrics are directly comparable to the XGBoost baseline's —
 comparability is now guaranteed by *calling the same function*, not (as
 before) by re-calling `train_test_split` with matching args and trusting the
@@ -136,15 +172,44 @@ before) by re-calling `train_test_split` with matching args and trusting the
 baseline trains on the split's `trainval` (order preserved, so its CV folds
 are byte-identical to before); the GNN carves a further validation slice for
 early stopping on validation MCC (not validation loss — the reweighted
-`BCEWithLogitsLoss` doesn't track MCC 1:1). `06`'s hyperparameters are
+`BCEWithLogitsLoss` doesn't track MCC 1:1). `train_gnn`'s hyperparameters are
 `argparse`-overridable (defaults live in `config.py` as `GNN_*` constants, so a
 no-args run matches the zero-CLI-arg convention) because it's meant to be
-invoked repeatedly. **Both `05` and `06` append to one shared ledger,
-`outputs/metrics.csv`** (`clear.ledger`), each row tagged with a `model`
-column (`logreg`/`xgboost`/`graphsage`) — so "did the GNN beat baseline" is a
-single `ledger.summarize()` groupby, not a cross-file comparison. Rows are
-reindexed to a fixed schema on append, so baseline rows (which leave the GNN
-hyperparameter columns empty) stay column-aligned with GNN rows. **`06` runs
+invoked repeatedly.
+
+**Every experiment writes one table, `outputs/results.csv`** (`clear.results`),
+in long format — one row per (run, metric):
+
+```
+family timestamp model tag seed attribute blind group_set params notes metric value lo hi std
+```
+
+`family` is `train` / `ablation` / `mitigate_threshold` / `mitigate_graph` /
+`mitigate_loss`. `params` is a JSON object of the knobs that were *chosen*
+(`alpha`, `lambda`, `mode`+`p`, the GNN hyperparameters); `notes` is JSON for
+values the run *produced* (fitted thresholds, graph statistics). That split is
+load-bearing: `params` is part of a row's identity and `notes` is not, so
+re-running a config **replaces** its rows instead of appending near-duplicates.
+Getting this wrong is not hypothetical — putting fitted thresholds in the
+identity key made one re-run add 78 duplicate rows during this refactor.
+
+This replaced four wide tables (`metrics.csv` plus three `*_tradeoff.csv`) that
+held the same quantities under different names — `mcc` vs `acc_mcc`,
+`selection_rate_gap` vs `dp_gap` — with a different "config column" set each.
+Keeping wide schemas in sync cost real complexity: fixed-schema reindexing on
+append, a hand-written merge-on-key in the fairloss sweep, and an
+exact-algebra backfill when Balanced Accuracy/Precision were added late. Long
+format removes the class: **a new metric is new rows, never a new column.**
+It also removes a live bug — the old ledger wrote its header once at file
+creation while `LEDGER_COLS` grew twice, so `metrics.csv` ended up with 25/26/28
+field rows under a 25-field header and `pandas.read_csv` raised `ParserError`
+on it. The ablation summary, which reads that file, was simply broken. The
+migration recovered those rows positionally (columns were only ever appended,
+so an N-field row maps to the first N columns) and the originals are preserved
+in `outputs/legacy/`.
+
+Each row is tagged with `family` and `model`, so "did the GNN beat baseline" is
+a single `results.summarize()` groupby, not a cross-file comparison. **`train_gnn` runs
 each config over `config.GNN_SEEDS`** (varying only the torch seed; the split
 stays fixed so every seed shares the baseline's test set), because GPU
 scatter-aggregation is non-deterministic and the threshold-dependent metrics
@@ -152,7 +217,7 @@ scatter-aggregation is non-deterministic and the threshold-dependent metrics
 reports mean±std so a margin can be judged against that noise; the baseline is
 deterministic and stays one reference row per model.
 `04_build_graph.py --k` similarly appends to `outputs/graph_edge_comparison.csv`
-and encodes `k` into the `.npy` filename (`edges_geo_k20.npy`) — `06_train_gnn.py
+and encodes `k` into the `.npy` filename (`edges_geo_k20.npy`) — `experiments/train_gnn.py
 --k_neighbors` picks which of those to load, so a `--k_neighbors N` run
 requires `04_build_graph.py --k N` to have been run first, else it's a missing-file
 error, not a silent fallback.
@@ -165,11 +230,11 @@ F1/Sensitivity ordering between GNN and baseline is **within** that noise
 (sensitivity std ≈ 0.02), so it isn't claimed as a win — this is exactly what
 the seed-repeats were added to expose. `temporal`/`weapon`/`geo_temporal`
 (their union) remain runnable via `--edge_type` but aren't the default.
-`src/ablation_sweep.py` (unnumbered utility, same tier as `eda.py` — no
+`src/experiments/ablation.py` (a utility, same tier as `eda.py` — no
 pipeline artifact of its own) now **imports `clear.gnn` and runs in-process**
-(loads the data once) instead of `subprocess`-relaunching `06` per config; it
+(loads the data once) instead of `subprocess`-relaunching `train_gnn` per config; it
 varies one hyperparameter at a time from the `config.GNN_*` defaults over
-`config.GNN_SEEDS`, then summarizes the `outputs/metrics.csv` ledger by
+`config.GNN_SEEDS`, then summarizes `outputs/results.csv` by
 dimension as mean±std, ranked on MCC. Best config found so far:
 `k_neighbors=20, lr=0.005` (rest at defaults, both since promoted into
 `config.py`) — `num_layers=1` and `aggr="max"` are clearly worse (graph depth
@@ -196,12 +261,12 @@ Precision** — the latter two added later purely so our models can be compared
 to the literature (Campedelli 2022 reports *only* those two) on a shared axis;
 they are secondary reporting metrics, not selection criteria. There is now a
 single definition of this 7-metric set, `clear.metrics.evaluate`, that both
-`05` and `06` call (it used to be copy-pasted into each and kept in sync by
-hand), so they can't drift apart. The ledger schema (`clear.ledger`) carries
-all seven; `balanced_accuracy`/`precision` were appended *after* the original
-five so existing `outputs/metrics.csv` rows stay column-aligned, and historical
-rows were backfilled by exact algebra (BA = (Sens+Spec)/2, Precision =
-F1·Sens/(2·Sens−F1)) rather than re-running. On this CA+TX+MI sample our
+`train_baseline` and `train_gnn` call (it used to be copy-pasted into each and kept in sync by
+hand), so they can't drift apart. `clear.results` carries all seven as ordinary
+rows. (Historically `balanced_accuracy`/`precision` were appended to a *wide*
+ledger schema after the fact, which needed column-alignment care and an exact-
+algebra backfill of old rows; the long format removes that whole class of
+change — a new metric is new rows, never a new column.) On this CA+TX+MI sample our
 Balanced Accuracy (XGB ≈ 0.65) sits well below the paper's (national XGB 0.767,
 California 0.802) — expected, because the paper's top-2 SHAP predictors are
 unavailable here: `Circumstance` is absent from the Kaggle CSV, and
@@ -227,7 +292,14 @@ attributes survive as one-hot dummies (`Victim Race=Black`, …) — 11 of `X`'s
 first fairness diagnosis) therefore comes from models that saw race and sex
 **directly**; this doc previously claimed the opposite, and the claim was
 wrong. `load_xy(blind=True)` drops the dummies whose prefix is in
-`config.SENSITIVE_FEATURE_COLS`, and `05`/`06` expose it as `--blind`
+`config.SENSITIVE_FEATURE_COLS` **and then asserts the drop actually happened**
+(`clear.data._assert_blind`: non-empty drop list, and no column left starting
+with a sensitive prefix). The drop condition depends on `03_features.py`
+one-hot-ing as `Victim Race=Black`; if that separator ever changes, the old code
+would produce an empty drop list and `--blind` would become a silent no-op that
+still exits 0, invalidating every blind result without a single error message.
+That doc-vs-reality drift is the exact failure this project already shipped once,
+so it is now enforced rather than documented. `train_baseline`/`train_gnn` expose the flag as `--blind`
 (ledger `tag="blind"`, dumps suffixed `_blind`), which is both the simplest
 mitigation (fairness through unawareness) and the only condition under which
 the graph-as-proxy question is answerable. `Victim Ethnicity` is included in
@@ -236,15 +308,15 @@ Hispanic-origin is a direct race proxy and leaving it in would keep a
 non-graph path open. `clear.data.load_sensitive()` is the other half of the
 `sens__*` pair:
 it returns the same `sens__*` columns in the *same row order*, so the split
-indices from `get_split` `iloc` into it directly. That's what lets `06` dump
+indices from `get_split` `iloc` into it directly. That's what lets `train_gnn` dump
 test-node predictions joined to sensitive attributes
-(`outputs/predictions_graphsage_{edge}.csv`, on by default,
-`--no_dump_predictions` to skip) and `07_fairness.py` diagnose group-wise
+(`outputs/predictions/graphsage_{edge}.csv`, on by default,
+`--no_dump_predictions` to skip) and `experiments/diagnose_fairness.py` diagnose group-wise
 fairness **without re-running training** — it reads a CSV, not a model. The
 dumped `proba` is the mean over `config.GNN_SEEDS` (the seeds share one test
 set), so the diagnosis isn't reading one seed's threshold noise.
 
-**`07_fairness.py` measures three group-wise gaps** over each sensitive
+**`experiments/diagnose_fairness.py` measures three group-wise gaps** over each sensitive
 attribute: demographic-parity gap (max−min `selection_rate`), equalized-odds
 gaps (max−min TPR and FPR), and — as the reference the other two are read
 against — `base_rate_gap`, the max−min of the *actual* clearance rate. The
@@ -281,11 +353,11 @@ each model's independent CI for overlap is invalid on a shared test set, and
 in practice it flips a conclusion here: GraphSAGE's and XGBoost's sex-gap
 amplification CIs overlap almost entirely (2.67 [2.39, 2.98] vs 2.55
 [2.29, 2.85]) while the paired difference is a clean +0.11 [+0.04, +0.20].
-`07` prints the contrast table and writes it to
+`diagnose_fairness` prints the contrast table and writes it to
 `outputs/fairness_model_contrasts.csv`; read model comparisons **only** from
 there.
 
-**`08_mitigate.py` is the prescribe stage's post-processing half** (`clear.mitigate`):
+**`experiments/mitigate_threshold.py` is the prescribe stage's post-processing half** (`clear.mitigate`):
 no retraining, just a per-group threshold applied to a saved dump. Strength is a
 single knob λ that interpolates each group's *target rate* — not its threshold —
 from its own observed rate (λ=0, reproduces the dump) to the pooled rate (λ=1,
@@ -306,16 +378,35 @@ vs 65.5%), and post-processing needs the sensitive attribute **at decision time*
 an edge-level mitigation *may* avoid depending on the variant: permanently
 rewiring the graph still needs race to place a new case's edges, so only the
 "drop during training, infer on the full graph" variant actually escapes the
-constraint. `09_fairgraph.py` does the permanent-rewiring form, because that is
+constraint. `experiments/mitigate_graph.py` does the permanent-rewiring form, because that is
 the one that doubles as the mechanism test.
 
-**`10_fairloss.py` is the mitigation that works, and it exists because `09`
+**`mitigate_graph` and `mitigate_loss` are the same experiment loop, and it lives in `clear.sweep`.**
+Both sweep one knob, and at each point train the GNN over `config.GNN_SEEDS`,
+dump test predictions, re-diagnose the gap with `diagnose_fairness`'s own definitions
+(`clear.fairness`), and emit one accuracy-vs-fairness row. Only the intervention
+differs: `mitigate_graph` swaps the graph (`run_point(..., data=modified)`), `mitigate_loss` changes the
+loss (`run_point(..., fair_alpha=...)`). `clear.sweep` holds the shared argparse
+block, the load/split/hyperparameter setup, and `run_point`; the scripts keep
+only their intervention and their own trade-off columns (which is why `run_point`
+returns the metric/gap block *without* `tag`/`blind`/`attribute` — the caller
+owns its own knobs). Before this, ~90 lines — the argparse defaults, the seed
+loop, the six-line re-diagnosis, the seven-metric aggregation, the six gap
+columns — were copy-pasted into both, so changing the gap definition in `diagnose_fairness`
+meant editing two more places, and editing only one would silently put the two
+mitigation curves on different axes. `clear.gnn.train_eval` grew `data=` and
+`**extra` in the same change: it already owned the seed loop but couldn't cover
+`mitigate_graph`/`mitigate_loss` (which needed a prebuilt graph and `fair_*` kwargs), so both had
+reimplemented it. Adding a fourth mitigation should mean a tag and an
+intervention argument, nothing else.
+
+**`experiments/mitigate_loss.py` is the mitigation that works, and it exists because `mitigate_graph`
 failed.** Instead of deleting the sensitive information from the input, it stops
 the model *using* it: `loss = BCE + alpha * (size-weighted variance of per-group
 mean predicted probability)`, computed on training nodes only
 (`clear.gnn.fairness_penalty`). With two groups that reduces to the squared
 selection-rate gap, i.e. the diagnosis' own quantity written into the loss; the
-sigmoid mean stands in for the non-differentiable hard rate. It sidesteps `09`'s
+sigmoid mean stands in for the non-differentiable hard rate. It sidesteps `mitigate_graph`'s
 failure mode because it never has to locate the leak — edge, block, or feature,
 the penalty presses on the *output*. And it needs race **only at training time**,
 which is the one practical objection to the post-processing route.
@@ -323,7 +414,7 @@ which is the one practical objection to the post-processing route.
 Blind geo, White-vs-Black, 3 seeds: amplification 1.37 → **0.06 [0.00, 0.24]** at
 alpha=50, for 0.0044 MCC. Comparable in cost to post-processing (−0.0025) with
 no decision-time attribute requirement — compare the two on *relative* cost, since
-`08` scores on the eval half and `10` on the whole test set.
+`mitigate_threshold` scores on the eval half and `mitigate_loss` on the whole test set.
 
 **The curve inverts above alpha≈50** (amplification 0.06 → 0.19 at 200 → 0.52 at
 1000). The first suspicion was model selection: early stopping picks on
@@ -353,10 +444,11 @@ mitigation **on its own** — at alpha=0, beta=1 alone takes amplification 1.37 
 accuracy of any mitigated config is beta=1, alpha=50 (MCC 0.2645, amplification
 0.101), which beats beta=0, alpha=50 on accuracy while giving up some fairness
 (0.058). Pick per what the frontier point needs to be; both are in
-`outputs/fairloss_tradeoff.csv`, which merges on `(alpha, beta, blind)` so
-re-running one beta neither overwrites the other curve nor duplicates rows.
+`outputs/results.csv` under `family=mitigate_loss`; `clear.results` replaces
+rows with a matching identity key, so re-running one beta neither overwrites
+the other curve nor duplicates rows.
 
-**`09_fairgraph.py` attacks the diagnosed cause instead of the symptom**
+**`experiments/mitigate_graph.py` attacks the diagnosed cause instead of the symptom**
 (`clear.fairgraph`): it drops same-race `geo` edges with probability p and
 retrains, so message passing carries less race information. It only means
 anything in the `--blind` condition (the default here) — with race still in `X`
@@ -393,13 +485,13 @@ correlates with race, no matter how the edges inside the block are paired.
 That revises the §5-5 reading: `temporal` scored low not because it is
 non-assortative but because it does not block on geography. Rewiring inside a
 block cannot delete the block, which is what sent the mitigation effort to
-`10_fairloss.py`.
+`experiments/mitigate_loss.py`.
 
 Edges are stored symmetrized, so `clear.fairgraph` folds to undirected pairs
 (`src < dst`), drops there, and re-symmetrizes; dropping one direction only
 would silently make message passing asymmetric.
 
-**`edge_homophily.py` asks whether the edges themselves encode the sensitive
+**`experiments/edge_homophily.py` asks whether the edges themselves encode the sensitive
 attributes** — the mechanism question behind any GNN-vs-flat fairness gap,
 since message passing can carry a neighbour's race into a node's
 representation even when race is absent from `X`. It reports raw homophily,
@@ -422,16 +514,25 @@ homophily measurement predicts the outcome correctly — see the blind-run
 findings below. Keep that ordering in mind before treating this table as a
 null result.
 
-**`05` and `06` both dump test predictions** (`clear.predictions`) joined to
+**`train_baseline` and `train_gnn` both dump test predictions** (`clear.predictions`) joined to
 the unencoded sensitive attributes, so diagnosis reads CSVs and never
-re-instantiates a model — `07` re-runs in seconds against a GNN that took
-minutes to train, and `08` (mitigation, not yet written) can write mitigated
-predictions in the same format to be diagnosed by the same code. `07` with no
+re-instantiates a model — `diagnose_fairness` re-runs in seconds against a GNN that took
+minutes to train, and `mitigate_threshold` (mitigation, not yet written) can write mitigated
+predictions in the same format to be diagnosed by the same code. `diagnose_fairness` with no
 arguments diagnoses *every* dump it finds, which is what makes the flat-vs-graph
 fairness comparison the default rather than an extra step.
 `clear.predictions.assert_same_test_set` fails loudly if two dumps disagree on
 `row_index`, since a silently mismatched test set would still produce a
 plausible-looking comparison table.
+
+**Dumps live in `outputs/predictions/`, one file per configuration.** They were
+loose in `outputs/` until the mitigation sweeps started leaving one per sweep
+point — 42 files / 79 MB, which buried the 9 small result CSVs (1.5 MB) that are
+the actual experiment record. They are all gitignored and regenerable, so the
+whole directory is ignored. Note the consequence for discovery: because every
+sweep point leaves a dump, a no-argument `diagnose_fairness` run now diagnoses
+all 42, not the ~7 model dumps the tracked `fairness_*.csv` were produced from.
+Use `--models` to reproduce those tables.
 
 **The `--blind` runs settled where each disparity comes from, and the two
 sensitive attributes answer differently.** All figures below are
@@ -473,16 +574,18 @@ Caveat to carry forward: `--min_n 5000` was chosen *after* seeing that the
 n≥1000 floor left this contrast borderline (+0.40 [−0.01, +0.86]). It is
 defensible — the White-vs-Black pair was flagged as the robust contrast in
 the very first diagnosis, both floors agree in direction, and the direction
-was predicted in advance by `edge_homophily.py` — but it is a post-hoc floor
+was predicted in advance by `experiments/edge_homophily.py` — but it is a post-hoc floor
 and all three floors stay in `outputs/fairness_gaps.csv` so the choice is
 visible rather than buried.
 
 `data/processed/` is gitignored, as are the raw CSV in `dataset/` (too large),
-`outputs/*.png`, and `outputs/predictions_*.csv` (a few MB each, regenerable by
-re-running `05`/`06`). The small result CSVs under `outputs/` **are**
+`outputs/*.png`, and all of `outputs/predictions/` (a few MB each, regenerable by
+re-running `train_baseline`/`train_gnn`). The small result CSVs under `outputs/` **are**
 tracked — they're the experiment record. The shared metrics ledger
-is `outputs/metrics.csv` (both trainers append; `model` column distinguishes
-rows); it supersedes the old per-model `baseline_metrics.csv`/`gnn_metrics.csv`.
+is `outputs/results.csv` (every experiment writes there; `family`/`model`
+columns distinguish rows). It supersedes `metrics.csv` and the three
+`*_tradeoff.csv` files, whose pre-unification contents are preserved under
+`outputs/legacy/`.
 
 ## Environment notes (Windows, non-ASCII user path)
 
