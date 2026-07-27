@@ -4,9 +4,21 @@ data/processed/
 outputs/*.png
 outputs/*.pkl
 outputs/*.joblib
-# test 노드별 예측 덤프(엣지당 수 MB). 06_train_gnn.py 재실행으로 재생성 가능.
-# 작은 결과 CSV(metrics.csv 등)는 실험 기록이므로 커밋한다.
-outputs/predictions/
+# test 노드별 예측 덤프(설정당 ~2MB). 대부분 재실행으로 재생성 가능하므로 제외.
+# 작은 결과 CSV(results.csv 등)는 실험 기록이므로 커밋한다.
+#
+# 예외 4개는 **재생성이 불가능해졌으므로** 커밋한다. 이것들을 만들던
+# experiments/train_baseline.py를 저장소에서 지웠기 때문이다(그래프 전용 정리).
+# 프로젝트의 헤드라인 결과가 여기 걸려 있다 — diagnose_fairness의 모델 대조표,
+#   graphsage_geo_blind - xgboost_blind = +0.82 [+0.65, +1.03]
+# 즉 "직접 경로를 막으면 평면 모델은 증폭을 멈추는데 GNN은 안 멈춘다"는 결론은
+# 이 덤프 없이는 다시 만들 수 없다(보고서 인용 60곳의 근거). 8.4MB의 보험이다.
+# 디렉터리 자체를 제외하면 예외가 안 먹으므로 `predictions/*` 형태여야 한다.
+outputs/predictions/*
+!outputs/predictions/logreg.csv
+!outputs/predictions/logreg_blind.csv
+!outputs/predictions/xgboost.csv
+!outputs/predictions/xgboost_blind.csv
 
 # Python
 __pycache__/
