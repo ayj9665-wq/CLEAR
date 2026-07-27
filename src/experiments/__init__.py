@@ -17,6 +17,14 @@ clear/로 밀려나거나, 그마저 안 되면 복붙됐다. (2) 없는 순서�
   08 -> mitigate_threshold  09 -> mitigate_graph    10 -> mitigate_loss
   ablation_sweep -> ablation
 
+그 뒤 저장소를 **그래프 줄기만** 남기도록 좁히면서 05·08과 ablation·eda를
+지웠다(커밋 4b128cf 이후). 결과는 전부 outputs/results.csv에 남아 있고 —
+family=train의 logreg/xgboost 행, family=mitigate_threshold의 4,004행,
+family=ablation의 480행 — 코드는 커밋 96d1dd1에서 되살릴 수 있다.
+평면 모델의 test 예측 덤프 4개는 재생성이 불가능하므로 예외적으로 커밋했다
+(outputs/predictions/{logreg,xgboost}[_blind].csv). 그래야 diagnose_fairness의
+모델 대조표 — 이 프로젝트의 헤드라인 — 를 계속 만들 수 있다.
+
 이제 전부 평범한 모듈이라 `python -m experiments.train_gnn`으로 실행하고
 (`-m`이 CWD를 sys.path에 넣으므로 src/에서 실행하면 config·clear가 그대로
 잡힌다), 필요하면 서로 import할 수도 있다.

@@ -1,15 +1,16 @@
-"""GraphSAGE 모델·학습 로직 — experiments/train_gnn.py와 experiments/ablation.py의 공통 출처.
+"""GraphSAGE 모델·학습 로직 — train_gnn과 완화 스윕(clear.sweep)의 공통 출처.
 
 이전에는 이 로직이 전부 학습 스크립트(당시 이름 `06_train_gnn.py`)에 있었고,
-ablation은 숫자로 시작하는 그 파일을 import할 수 없어(문법 오류) subprocess로
-Python을 config마다 다시 띄웠다 — 매번 torch를 재import하고 parquet를 다시
-읽었다. 학습 로직을 importable한 여기로 옮기면 ablation이
+하이퍼파라미터 스윕은 숫자로 시작하는 그 파일을 import할 수 없어(문법 오류)
+subprocess로 Python을 config마다 다시 띄웠다 — 매번 torch를 재import하고 parquet를
+다시 읽었다. 학습 로직을 importable한 여기로 옮기면 호출부가
 `from clear.gnn import ...`로 in-process 호출해 데이터를 한 번만 로드한다.
 experiments/train_gnn.py는 얇은 CLI 래퍼가 된다.
 
-(스크립트 번호는 그 뒤 없앴다 — experiments/__init__.py 참고. 이 모듈이 존재하는
-이유였던 import 제약 자체는 사라졌지만, 여기 있는 로직은 이제 train_gnn·ablation·
-sweep 셋이 공유하므로 그대로 둔다.)
+(스크립트 번호는 그 뒤 없앴고 — experiments/__init__.py 참고 — 하이퍼파라미터
+스윕 스크립트 자체는 탐색이 끝난 뒤 지웠다. 우승값은 config.py에 승격돼 있고
+결과는 outputs/results.csv의 family=ablation에 남아 있다. 이 모듈은 지금도
+train_gnn·sweep이 공유한다.)
 
 seed 반복 설계: split은 config.RANDOM_STATE로 고정하고(=baseline과 동일 test
 집합, 비교 가능성 유지) torch seed만 바꿔 학습 분산을 측정한다. GPU scatter
@@ -59,10 +60,10 @@ class GraphSAGE(nn.Module):
 def default_hp():
     """config.py 기본값의 하이퍼파라미터 한 벌. train_one에 그대로 **전개된다.
 
-    experiments/ablation.py와 clear.sweep(mitigate_graph·mitigate_loss)이 공유한다 — 둘 다 "기본값에서
-    출발"이 전제라, 따로 적어두면 config를 바꿨을 때 한쪽만 따라가서 두 실험이
-    말없이 다른 기준점을 쓰게 된다. experiments/train_gnn.py는 이걸 안 쓴다(그쪽은
-    argparse 값이 출처이고, 기본값은 add_argument의 default가 이미 config다).
+    clear.sweep(mitigate_graph·mitigate_loss)이 쓴다 — "기본값에서 출발"이 전제라,
+    따로 적어두면 config를 바꿨을 때 한쪽만 따라가 두 실험이 말없이 다른 기준점을
+    쓰게 된다. experiments/train_gnn.py는 이걸 안 쓴다(그쪽은 argparse 값이
+    출처이고, 기본값은 add_argument의 default가 이미 config다).
 
     grad_clip은 뺐다 — train_one의 기본값(0.0)이 곧 '안 씀'이고, 10만 노출한다.
     """
@@ -88,7 +89,7 @@ def build_data(X, edge_type, k, device):
 
 
 def prepare(X, y, val_size, device):
-    """split + device 텐서 준비. main·ablation이 공유(로드·분할 한 번).
+    """split + device 텐서 준비. 호출부가 공유(로드·분할 한 번).
     split은 config 기본 random_state로 고정 — 모든 seed·config가 동일 test 집합."""
     split = get_split(y, val_size=val_size)
     y_t = torch.tensor(y, dtype=torch.float32, device=device)
@@ -216,7 +217,7 @@ def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neigh
         test_proba = torch.sigmoid(out[test_idx]).cpu().numpy()
     y_test = y[test_idx].cpu().numpy().astype(int)
 
-    metric_vals = evaluate(y_test, test_proba)   # train_baseline와 동일 지표·동일 0.5 임계값
+    metric_vals = evaluate(y_test, test_proba)   # 커밋된 평면 모델 덤프와 동일 지표·임계값
     print(f"[eval:{edge_type}/seed{seed}] " + "  ".join(f"{k}={v:.4f}" for k, v in metric_vals.items()))
 
     return {
@@ -241,8 +242,8 @@ def dump_test_predictions(rows, test_idx, y, path):
     """seed별 test_proba를 평균해 test 노드별 예측을 CSV로 저장(공정성 진단 07용).
 
     GNN 사정(seed 평균)만 여기서 처리하고, 덤프 형식 자체는 clear.predictions가
-    정의한다 — experiments/train_baseline.py(단일 결정적 예측)와 08(완화된 예측)이 같은
-    형식을 써야 diagnose_fairness이 셋을 나란히 진단할 수 있기 때문.
+    정의한다 — 평면 모델의 단일 결정적 예측과 완화된 예측이 같은 형식을 써야
+    diagnose_fairness가 셋을 나란히 진단할 수 있기 때문.
 
     rows: train_eval 반환(각 dict에 '_test_proba'). test_idx: 원본 행 위치(np array,
     features.parquet 행에 대응 → load_sensitive()와 join 가능). 모든 seed가 동일 test
@@ -262,7 +263,7 @@ def train_eval(edge_type, k_neighbors, hp, seeds, tag, X, y_t, train_t, val_t, t
     data       이미 만든 그래프를 쓰려면 넘긴다. mitigate_graph가 동종 엣지를 제거한
                그래프를, mitigate_loss가 alpha 격자 내내 재사용할 그래프를 이렇게
                넘긴다. None이면 여기서 edge_type/k_neighbors로 로드한다(train_gnn의 경로).
-    family     결과 기록 계열(train / ablation / mitigate_graph / mitigate_loss).
+    family     결과 기록 계열(train / mitigate_graph / mitigate_loss).
                None이면 기록하지 않는다.
     extra      train_one에 그대로 전달(mitigate_loss의 fair_alpha/fair_codes/fair_beta).
 

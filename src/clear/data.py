@@ -1,9 +1,9 @@
-"""공용 데이터 로딩·분할 — experiments/train_baseline.py와 experiments/train_gnn.py의 단일 출처.
+"""공용 데이터 로딩·분할 — 학습·완화 스크립트 전부의 단일 출처.
 
 이전 상태(이 모듈로 통합하기 전):
   - load_xy()가 두 스크립트에 복붙돼 있었고, bool→int8 캐스팅이 baseline
     쪽에만 있어 이미 미세하게 갈라져 있었다.
-  - test 분할은 train_gnn이 train_baseline의 train_test_split을 "같은 n·stratify·random_state로
+  - test 분할은 GNN 쪽이 평면 모델의 train_test_split을 "같은 n·stratify·random_state로
     다시 호출하면 같은 행이 나온다"는 불변식에 의존해 재현했다. 맞는 말이지만
     둘 중 한쪽 분할 로직이 바뀌면 에러 없이 조용히 어긋난다 — 비교의 최악
     실패 모드다.
@@ -21,7 +21,7 @@ from sklearn.model_selection import train_test_split
 
 import config as C
 
-# baseline은 trainval+test, GNN은 train/val/test를 쓴다. 한 벌로 둘 다 커버.
+# GNN은 train/val/test를, 평면 baseline은 trainval+test를 쓰던 한 벌.
 Split = namedtuple("Split", ["train", "val", "test", "trainval"])
 
 
@@ -95,13 +95,13 @@ def load_sensitive():
 
 
 def get_split(y, *, test_size=None, val_size=None, random_state=None):
-    """층화 분할 인덱스를 결정적으로 계산. train_baseline·train_gnn 공통 출처.
+    """층화 분할 인덱스를 결정적으로 계산. 모든 호출부의 공통 출처.
 
     test는 첫 분할에서만 나오고 val_size와 무관하므로, baseline과 GNN이
     (그리고 --val_size를 바꿔도) 항상 동일한 test 집합을 쓴다 — 비교 가능성이
-    구성상 보장된다. trainval은 첫 분할이 돌려준 순서 그대로라, baseline이
-    X.iloc[trainval]로 예전(train_test_split 직접 호출)과 비트 단위로 같은
-    학습 풀·CV 폴드를 얻는다.
+    구성상 보장된다. trainval은 첫 분할이 돌려준 순서 그대로다 — 평면 baseline이
+    X.iloc[trainval]로 CV를 돌 때 쓰던 값이다. 그 스크립트는 지웠지만(커밋 96d1dd1),
+    커밋된 덤프가 이 분할에서 나왔으므로 필드는 유지한다.
 
     인자를 안 주면 config 기본값(TEST_SIZE / GNN_VAL_SIZE / RANDOM_STATE).
     """

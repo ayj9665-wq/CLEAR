@@ -35,28 +35,19 @@ python 04_build_graph.py      # -> data/processed/graph/edges_{geo,temporal,weap
 python 04_build_graph.py --k 20     # rebuild at a different degree cap (needed before --k_neighbors 20 below works)
 
 # --- experiments (unordered; all write outputs/results.csv) ------------------
-python -m experiments.eda                 # -> outputs/eda_*.csv, outputs/eda_*.png
-python -m experiments.train_baseline      # -> results.csv (family=train), baseline_xgb_top_features.csv, predictions/{logreg,xgboost}.csv
 python -m experiments.train_gnn           # -> results.csv (family=train; geo only, one row per config.GNN_SEEDS seed)
 python -m experiments.train_gnn --edge_type all                                 # train geo+temporal+weapon for comparison
 python -m experiments.train_gnn --edge_type geo --hidden_dim 128 --tag my_sweep # any hyperparam overridable via CLI
 python -m experiments.train_gnn --edge_type geo --k_neighbors 20                # use a --k 20 graph built above
 python -m experiments.train_gnn --edge_type geo --seeds 42,43,44                # torch seeds to repeat over (split stays fixed)
 python -m experiments.train_gnn --edge_type geo_temporal                        # union of geo+temporal edges
-python -m experiments.train_baseline --blind   # race/sex/ethnicity dummies dropped from X
-python -m experiments.train_gnn --blind        # ditto (graph unchanged) -> predictions_graphsage_geo_blind.csv
-
-python -m experiments.ablation            # in-process one-factor-at-a-time sweep; mean±std over config.GNN_SEEDS
-python -m experiments.ablation --dry_run  # list the configs it would train (no training, no result writes)
-python -m experiments.ablation --dims lr num_layers   # sweep only these axes
+python -m experiments.train_gnn --blind        # race/sex/ethnicity dummies dropped from X (graph unchanged)
 
 python -m experiments.diagnose_fairness   # diagnoses EVERY dump in outputs/predictions/ -> fairness_{group_metrics,gaps,model_contrasts}.csv
 python -m experiments.diagnose_fairness --models graphsage_geo xgboost   # restrict to specific dumps
 python -m experiments.diagnose_fairness --min_n 5000 --n_boot 2000       # stricter group floor / more bootstrap reps
 python -m experiments.edge_homophily      # -> outputs/edge_homophily.csv (are edges a sensitive-attribute proxy?)
 
-python -m experiments.mitigate_threshold  # -> results.csv (family=mitigate_threshold; group-wise threshold sweep, every dump)
-python -m experiments.mitigate_threshold --criteria tpr --steps 21 --min_n 1000   # equalize TPR instead, finer grid, looser group floor
 python -m experiments.mitigate_graph      # -> results.csv (family=mitigate_graph; drop same-race edges + matched random control)
 python -m experiments.mitigate_loss       # -> results.csv (family=mitigate_loss; fairness penalty in the training loss)
 python -m experiments.mitigate_loss --beta 1.0                              # early-stop on val MCC - beta*val gap instead of val MCC alone
@@ -67,9 +58,32 @@ python -m experiments.poster_figures      # -> outputs/poster_fig{1,2}_*.png (re
 
 There is no test suite; there is no build/lint step configured.
 
-`migrate_results.py` at `src/` root is a one-time (re-runnable) converter from
-the pre-unification result CSVs to `outputs/results.csv`; it has already been
-run and its inputs are preserved in `outputs/legacy/`.
+## Scope: this repo is the graph line of work
+
+Four scripts were removed once their results were in hand, to leave one clean
+line — build graph → train GNN → diagnose → mitigate:
+
+| removed | produced | still available as |
+|---|---|---|
+| `train_baseline.py` | flat LogReg/XGBoost floor | `results.csv` family=`train` (logreg/xgboost rows) **+ committed dumps** |
+| `mitigate_threshold.py`, `clear/mitigate.py` | group-wise threshold sweep | `results.csv` family=`mitigate_threshold` (4,004 rows) |
+| `ablation.py` | hyperparameter OFAT sweep | `results.csv` family=`ablation` (480 rows); winners promoted into `config.py` |
+| `eda.py`, `migrate_results.py` | EDA plots; one-time schema migration | `eda_clearance_by_group.csv`; migration already applied |
+
+**All of it is recoverable from commit `96d1dd1`** — nothing is lost, only
+removed from the working tree. Findings sections below that describe these
+experiments still stand; they document results, not live code.
+
+The one thing that was *not* recoverable is the flat models' test predictions:
+they are gitignored and only `train_baseline.py` could make them, yet the
+project's headline is a model contrast that needs them —
+`graphsage_geo_blind − xgboost_blind = +0.82 [+0.65, +1.03]`. So those four
+dumps are committed as `.gitignore` exceptions (8.4 MB), and
+`diagnose_fairness` reproduces that table exactly without the trainer. Sixty
+citations across the fairness and benchmark reports depend on this.
+
+`xgboost` was dropped from `requirements.txt` for the same reason;
+`scikit-learn` stays (splitting + metrics).
 
 ## Architecture
 
@@ -109,25 +123,27 @@ import each other.
 unions), `clear.gnn` (the GraphSAGE model + training loop), `clear.results`
 (the one result schema, `outputs/results.csv`), `clear.predictions` (the
 test-prediction dump format that hands off from training to diagnosis),
-`clear.fairness` (group metrics, gaps, bootstrap CIs), `clear.mitigate`
-(group-wise thresholds), `clear.fairgraph` (homophilous-edge dropping),
+`clear.fairness` (group metrics, gaps, bootstrap CIs), `clear.fairgraph`
+(homophilous-edge dropping),
 `clear.sweep` (the mitigation sweep harness `mitigate_graph`/`mitigate_loss`
 share). The experiment scripts are thin CLIs over `clear/`; `config.py` holds
 all paths/constants. The package originally existed because of the import
 constraint above; it stays because its modules genuinely have multiple callers
-(`clear.metrics` 7, `clear.predictions` 7, `clear.data` 6). The rule for what
-belongs there is **two or more callers** — single-caller computation stays in
-its script.
+(`clear.data` 6, `clear.results` 6, `clear.predictions` 6, `clear.metrics` 5,
+`clear.gnn` 5). The rule for what belongs there is **two or more callers** —
+single-caller computation stays in its script. `clear.fairgraph` is the one
+exception left (only `mitigate_graph` uses it); it stays because its docstrings
+carry the method rationale for the edge intervention, which would be buried in
+a CLI file. `clear.mitigate` was the other and left with its script.
 
-`train_baseline` was written before `04_build_graph`/`train_gnn`: it's the
-pre-graph performance floor (flat XGBoost/LogReg) the GNN has to beat, so it
-needed to exist first. The prescribe stage is three scripts because the first
-two answers were incomplete — `mitigate_threshold` post-processes thresholds
-(works, but needs the attribute at decision time), `mitigate_graph` rewires
-edges (**fails**, and the failure is what located the real leak),
-`mitigate_loss` penalises the gap in the training loss (works, no decision-time
-attribute). Read them in that order; each exists because of what the previous
-one could not do.
+The prescribe stage was three experiments because the first two answers were
+incomplete — `mitigate_threshold` post-processed thresholds (works, but needs
+the attribute at decision time), `mitigate_graph` rewires edges (**fails**, and
+the failure is what located the real leak), `mitigate_loss` penalises the gap in
+the training loss (works, no decision-time attribute). Read the findings in that
+order; each exists because of what the previous one could not do. Only the last
+two are still code — `mitigate_threshold`'s curve lives on in `results.csv` and
+is still plotted on the poster's trade-off panel.
 
 ```
 dataset/kaggle_homicide_Reports_1980_2014.csv  (not in git, ~638k rows)
@@ -136,7 +152,7 @@ dataset/kaggle_homicide_Reports_1980_2014.csv  (not in git, ~638k rows)
   -> 03_features.py 5-yr age bins, decade bins, full one-hot; *copies* race/sex
                      off as sens__* for fairness work — the one-hot dummies of the
                      same columns stay in X unless load_xy(blind=True)
-  -> eda.py / experiments/train_baseline.py       (read features.parquet or sample.parquet;
+  -> (removed: eda.py / train_baseline.py)  (read features.parquet or sample.parquet;
                                            -> outputs/predictions/{logreg,xgboost}[_blind].csv)
   -> 04_build_graph.py                   (reads sample.parquet + features.parquet ->
                                            data/processed/graph/edges_{geo,temporal,weapon}.npy)
@@ -146,7 +162,7 @@ dataset/kaggle_homicide_Reports_1980_2014.csv  (not in git, ~638k rows)
                                            outputs/fairness_{group_metrics,gaps,model_contrasts}.csv)
      experiments/edge_homophily.py                   (reads edges_*.npy + sens__* ->
                                            outputs/edge_homophily.csv)
-  -> experiments/mitigate_threshold.py  (reads every dump -> results.csv family=mitigate_threshold)
+  -> (removed: mitigate_threshold.py)   (read every dump -> results.csv family=mitigate_threshold)
      experiments/mitigate_graph.py      (edges + sens__* -> retrains -> family=mitigate_graph)
      experiments/mitigate_loss.py       (penalty in the loss -> family=mitigate_loss)
 ```
@@ -164,7 +180,7 @@ across process runs) to avoid an O(n²) blowup on huge blocks (e.g. LA alone is
 ~44k rows). Edge arrays are stored pre-symmetrized (both `(i,j)` and `(j,i)`
 present) — already the format PyG's `edge_index` wants directly.
 
-**`train_baseline` and `train_gnn` share one test split via `clear.data.get_split`**, so
+**Everything shares one test split via `clear.data.get_split`**, so
 GraphSAGE's test metrics are directly comparable to the XGBoost baseline's —
 comparability is now guaranteed by *calling the same function*, not (as
 before) by re-calling `train_test_split` with matching args and trusting the
@@ -184,8 +200,8 @@ in long format — one row per (run, metric):
 family timestamp model tag seed attribute blind group_set params notes metric value lo hi std
 ```
 
-`family` is `train` / `ablation` / `mitigate_threshold` / `mitigate_graph` /
-`mitigate_loss`. `params` is a JSON object of the knobs that were *chosen*
+`family` is `train` / `mitigate_graph` / `mitigate_loss` for live code, plus
+`ablation` / `mitigate_threshold` from the removed scripts (see Scope). `params` is a JSON object of the knobs that were *chosen*
 (`alpha`, `lambda`, `mode`+`p`, the GNN hyperparameters); `notes` is JSON for
 values the run *produced* (fitted thresholds, graph statistics). That split is
 load-bearing: `params` is part of a row's identity and `notes` is not, so
@@ -230,7 +246,7 @@ F1/Sensitivity ordering between GNN and baseline is **within** that noise
 (sensitivity std ≈ 0.02), so it isn't claimed as a win — this is exactly what
 the seed-repeats were added to expose. `temporal`/`weapon`/`geo_temporal`
 (their union) remain runnable via `--edge_type` but aren't the default.
-`src/experiments/ablation.py` (a utility, same tier as `eda.py` — no
+`src/experiments/ablation.py` (since removed — see Scope; a utility with no
 pipeline artifact of its own) now **imports `clear.gnn` and runs in-process**
 (loads the data once) instead of `subprocess`-relaunching `train_gnn` per config; it
 varies one hyperparameter at a time from the `config.GNN_*` defaults over
@@ -261,7 +277,7 @@ Precision** — the latter two added later purely so our models can be compared
 to the literature (Campedelli 2022 reports *only* those two) on a shared axis;
 they are secondary reporting metrics, not selection criteria. There is now a
 single definition of this 7-metric set, `clear.metrics.evaluate`, that both
-`train_baseline` and `train_gnn` call (it used to be copy-pasted into each and kept in sync by
+every trainer calls (it used to be copy-pasted per script and kept in sync by
 hand), so they can't drift apart. `clear.results` carries all seven as ordinary
 rows. (Historically `balanced_accuracy`/`precision` were appended to a *wide*
 ledger schema after the fact, which needed column-alignment care and an exact-
@@ -299,7 +315,7 @@ one-hot-ing as `Victim Race=Black`; if that separator ever changes, the old code
 would produce an empty drop list and `--blind` would become a silent no-op that
 still exits 0, invalidating every blind result without a single error message.
 That doc-vs-reality drift is the exact failure this project already shipped once,
-so it is now enforced rather than documented. `train_baseline`/`train_gnn` expose the flag as `--blind`
+so it is now enforced rather than documented. `train_gnn` exposes the flag as `--blind`
 (ledger `tag="blind"`, dumps suffixed `_blind`), which is both the simplest
 mitigation (fairness through unawareness) and the only condition under which
 the graph-as-proxy question is answerable. `Victim Ethnicity` is included in
@@ -514,7 +530,7 @@ homophily measurement predicts the outcome correctly — see the blind-run
 findings below. Keep that ordering in mind before treating this table as a
 null result.
 
-**`train_baseline` and `train_gnn` both dump test predictions** (`clear.predictions`) joined to
+**Trainers dump test predictions** (`clear.predictions`) joined to
 the unencoded sensitive attributes, so diagnosis reads CSVs and never
 re-instantiates a model — `diagnose_fairness` re-runs in seconds against a GNN that took
 minutes to train, and `mitigate_threshold` (mitigation, not yet written) can write mitigated

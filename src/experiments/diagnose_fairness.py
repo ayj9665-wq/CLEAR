@@ -56,8 +56,8 @@ def main():
 
     paths = predictions.discover(args.models)
     if not paths:
-        sys.exit("[에러] outputs/predictions_*.csv 없음. 먼저 실행: "
-                 "python experiments/train_baseline.py / python experiments/train_gnn.py")
+        sys.exit("[에러] outputs/predictions/ 에 덤프 없음. 먼저 실행: "
+                 "python -m experiments.train_gnn")
 
     dumps = {label: predictions.load(p) for label, p in paths.items()}
     test_idx = predictions.assert_same_test_set(dumps)

@@ -182,7 +182,8 @@ def from_run(row, family, *, attribute=None, blind=None, group_set=None):
     옛 clear.ledger.append가 하던 일이다. 차이는 고정 스키마로 reindex하지
     않는다는 것 — 그 reindex가 필요했던 이유(행마다 열이 다름)를 long format이
     없앴다. 실제로 옛 원장은 열이 두 번 늘어나며 헤더-행 길이가 어긋나 pandas가
-    읽지 못하는 상태까지 갔다(migrate_results.py 참고).
+    읽지 못하는 상태까지 갔다. 그때의 위치 기반 복구는 커밋 96d1dd1의
+    migrate_results.py에 남아 있다(변환 완료 후 삭제).
     """
     metrics = {m: float(row[m]) for m in ACCURACY + RUNINFO
                if row.get(m) is not None and not isinstance(row.get(m), str)
@@ -199,9 +200,9 @@ def from_wide(d, family, param_keys, *, note_keys=(), model=None, group_set=None
     """`acc_*` / `dp_*` 형태의 wide 결과 행 하나 -> long 행.
 
     옛 *_tradeoff.csv의 열 이름 규약을 canonical로 옮긴다. 완화 스크립트
-    (mitigate_threshold)와 일회성 마이그레이션(migrate_results.py)이 공유한다 —
-    변환 규칙이 두 벌이면 마이그레이션한 과거 결과와 새로 만든 결과가 조용히
-    다른 이름을 갖게 된다.
+    이 규칙이 두 벌이면 마이그레이션한 과거 결과와 새로 만든 결과가 조용히
+    다른 이름을 갖게 된다. 지금은 호출부가 없지만(mitigate_threshold를 지웠다)
+    results.csv에 그 형식으로 들어간 4,004행이 남아 있으므로 규칙은 유지한다.
     """
     num, ci, std = {}, {}, {}
     for m in ACCURACY:
@@ -271,7 +272,7 @@ def summarize(df, group_cols, metrics=None, sort_by="mcc"):
     """시드 반복 mean/std/n. 원장의 summarize()를 long 스키마로 옮긴 것.
 
     반환 열: group_cols + n + {지표}_mean/{지표}_std — 옛 형식과 같아서
-    ablation 요약 출력이 그대로 유지된다.
+    옛 ablation 요약과 같은 형식이다.
     """
     metrics = metrics or ACCURACY
     df = df[df["metric"].isin(metrics)]

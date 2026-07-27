@@ -1,7 +1,7 @@
 """
 experiments/train_gnn.py — GraphSAGE 학습 CLI (얇은 래퍼)
 
-모델·학습 로직은 clear/gnn.py에 있다(experiments/ablation.py가 subprocess 대신
+모델·학습 로직은 clear/gnn.py에 있다(스윕 스크립트들이 subprocess 대신
 in-process로 재사용하기 위함). 이 파일은 인자 파싱 → 데이터 로드 → 분할 →
 config별 seed 반복 학습 → 원장(outputs/metrics.csv) append만 담당한다.
 
@@ -10,14 +10,14 @@ ablation 결과로 승격된 값)와 config.GNN_SEEDS로 학습한다. 하이퍼
 전부 argparse로 오버라이드 가능(개별 실험용).
 
 평가지표: AUC / MCC / F1 / Sensitivity / Specificity (+ 논문 대조용 Balanced
-Accuracy / Precision) — experiments/train_baseline.py와 동일 체계(clear.metrics). MCC를
+Accuracy / Precision) — clear.metrics의 단일 정의를 쓴다. MCC를
 대표 지표로 val 조기 종료·순위에 쓴다.
 
 기본으로 edge_type별 test 노드 예측(seed 평균 proba + 민감속성)을
 outputs/predictions_graphsage_{edge}.csv로 저장한다(--no_dump_predictions로 끔) —
 experiments/diagnose_fairness.py의 그룹별 공정성 진단 입력.
 
-seed 반복: split은 config.RANDOM_STATE로 고정(=train_baseline와 동일 test 집합, 비교
+seed 반복: split은 config.RANDOM_STATE로 고정(=커밋된 평면 모델 덤프와 동일 test 집합, 비교
 가능성 유지)하고 torch seed만 --seeds로 바꿔 학습 분산(mean±std)을 남긴다.
 임계값 의존 지표는 run마다 ±3~4점 흔들리므로 단일 run 비교는 신뢰 불가.
 
@@ -73,7 +73,7 @@ def main():
 
     y_t, train_t, val_t, test_t = prepare(X, y, args.val_size, device)
     print(f"[split] train {len(train_t):,} / val {len(val_t):,} / test {len(test_t):,} "
-          f"(test는 experiments/train_baseline.py와 동일 집합)")
+          f"(test는 outputs/predictions/의 평면 모델 덤프와 동일 집합)")
 
     hp = dict(
         hidden_dim=args.hidden_dim, num_layers=args.num_layers, dropout=args.dropout,

@@ -1,4 +1,4 @@
-"""test 노드 예측 덤프의 단일 출처 — 학습 단계(train_baseline·train_gnn)와 진단 단계(diagnose_fairness·08)의 인터페이스.
+"""test 노드 예측 덤프의 단일 출처 — 학습 단계와 진단 단계의 인터페이스.
 
 공정성 진단은 모델을 다시 띄우지 않는다. 학습 스크립트가 test 예측을 민감속성과
 함께 CSV로 떨어뜨리고, 진단은 그 CSV만 읽는다 — 그래서 GNN 재학습(수 분) 없이
@@ -87,7 +87,7 @@ def discover(models=None):
 def assert_same_test_set(dumps):
     """여러 덤프가 동일한 test 행을 가리키는지 검증(모델 간 비교의 전제).
 
-    clear.data.get_split이 train_baseline·train_gnn 양쪽에 같은 test 인덱스를 주므로 정상 상태에선
+    clear.data.get_split이 모든 호출부에 같은 test 인덱스를 주므로 정상 상태에선
     항상 통과한다. 그래도 확인하는 이유: 어긋나도 조용히 "그럴듯한" 비교표가
     나오기 때문이다 — 분할 로직이 바뀌었을 때 여기서 걸려야 한다.
     dumps: {라벨: DataFrame}

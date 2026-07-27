@@ -36,7 +36,7 @@ def add_common_args(ap):
     ap.add_argument("--edge_type", default=C.GNN_DEFAULT_EDGE_TYPE)
     ap.add_argument("--k_neighbors", type=int, default=C.K_NEIGHBORS)
     ap.add_argument("--seeds", type=gnn.parse_seeds, default=C.GNN_SEEDS,
-                    help="쉼표구분 torch seed. split은 고정(=train_baseline·06과 동일 test 집합).")
+                    help="쉼표구분 torch seed. split은 고정(=커밋된 평면 모델 덤프와 동일 test 집합).")
     ap.add_argument("--min_n", type=int, default=5000,
                     help="완화·격차 대상 그룹의 최소 표본수(기본 5000 = 인종은 White/Black)")
     ap.add_argument("--sighted", action="store_true",

@@ -1,4 +1,4 @@
-"""공용 평가 지표 — experiments/train_baseline.py와 experiments/train_gnn.py의 단일 출처.
+"""공용 평가 지표 — 학습·완화 스크립트 전부의 단일 출처.
 
 AUC / MCC / F1 / Sensitivity / Specificity 한 벌 + 논문 대조용 Balanced Accuracy /
 Precision. 이전에는 이 딕셔너리가 evaluate()(baseline)와 train_one()(GNN)에 각각
