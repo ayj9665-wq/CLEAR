@@ -15,7 +15,9 @@ techniques close that gap, and at what accuracy cost?).
 Written docs with the full design rationale (Korean), in `reports/`:
 `문제정의서_CLEAR.md` (problem definition), `AI모델_개발계획서_살인사건검거_GNN.md`
 (dev plan — graph/edge design, GNN architecture, 4-week roadmap),
-`EDA_보고서.md` (EDA findings).
+`EDA_보고서.md` (EDA findings), `확장설계서_CLEAR.md` (extension plan, **not yet
+implemented** — edge-relatedness test, model registry, edge importance, unsolved-case
+clustering, national county web map).
 
 ## Commands
 
@@ -33,6 +35,8 @@ python 02_sample.py           # -> data/processed/sample.parquet
 python 03_features.py         # -> data/processed/features.parquet
 python 04_build_graph.py      # -> data/processed/graph/edges_{geo,temporal,weapon}_k{k}.npy (k=config.K_NEIGHBORS)
 python 04_build_graph.py --k 20     # rebuild at a different degree cap (needed before --k_neighbors 20 below works)
+python 04_build_graph.py --rank onehot --control --candidates geo
+                                    # -> edges_geo_k20_rank_onehot[_control].npy (similarity-ranked graph + degree-matched control; REJECTED, see Scope)
 
 # --- experiments (unordered; all write outputs/results.csv) ------------------
 python -m experiments.train_gnn           # -> results.csv (family=train; geo only, one row per config.GNN_SEEDS seed)
@@ -47,12 +51,22 @@ python -m experiments.diagnose_fairness   # diagnoses EVERY dump in outputs/pred
 python -m experiments.diagnose_fairness --models graphsage_geo xgboost   # restrict to specific dumps
 python -m experiments.diagnose_fairness --min_n 5000 --n_boot 2000       # stricter group floor / more bootstrap reps
 python -m experiments.edge_homophily      # -> outputs/edge_homophily.csv (are edges a sensitive-attribute proxy?)
+python -m experiments.edge_relatedness    # -> outputs/edge_relatedness.csv (do edges link genuinely related cases?)
+python -m experiments.edge_relatedness --no_oracle                  # skip the O(n^2)-per-block oracle
+python -m experiments.edge_relatedness --oracle_cap 3000            # larger per-block sample for the oracle
+python -m experiments.edge_relatedness --similarity onehot onehot_idf ordinal ordinal_idf
+                                          # -> also outputs/edge_relatedness_similarity.csv (encoding bake-off)
 
 python -m experiments.mitigate_graph      # -> results.csv (family=mitigate_graph; drop same-race edges + matched random control)
 python -m experiments.mitigate_loss       # -> results.csv (family=mitigate_loss; fairness penalty in the training loss)
 python -m experiments.mitigate_loss --beta 1.0                              # early-stop on val MCC - beta*val gap instead of val MCC alone
 python -m experiments.mitigate_loss --alphas 0 25 50 75 --seeds 42,43,44,45 # finer alpha grid near the useful range
 
+python -m experiments.detect_cold_blocks  # -> outputs/cold_blocks.csv (blocks with unexplained excess unsolved; family=cold_blocks)
+python -m experiments.detect_cold_blocks --blocks county hargrove --min_n 50
+python -m experiments.detect_cold_blocks --model graphsage_geo_blind --calibrate none   # diagnostic only, see below
+
+python -m experiments.map_figures         # -> outputs/map_fig{1,2}_*.png (county choropleth of the residuals + the race panel)
 python -m experiments.poster_figures      # -> outputs/poster_fig{1,2}_*.png (reads result CSVs only, no retraining)
 ```
 
@@ -125,6 +139,9 @@ unions), `clear.gnn` (the GraphSAGE model + training loop), `clear.results`
 test-prediction dump format that hands off from training to diagnosis),
 `clear.fairness` (group metrics, gaps, bootstrap CIs), `clear.fairgraph`
 (homophilous-edge dropping),
+`clear.similarity` (within-block case-similarity feature maps — the ranking criterion
+candidates; used by `edge_relatedness`'s oracle and, once built, by the ranked-graph
+mode of `04_build_graph.py`),
 `clear.sweep` (the mitigation sweep harness `mitigate_graph`/`mitigate_loss`
 share). The experiment scripts are thin CLIs over `clear/`; `config.py` holds
 all paths/constants. The package originally existed because of the import
@@ -179,6 +196,128 @@ degree at `config.K_NEIGHBORS` via a deterministic shuffle-ring construction
 across process runs) to avoid an O(n²) blowup on huge blocks (e.g. LA alone is
 ~44k rows). Edge arrays are stored pre-symmetrized (both `(i,j)` and `(j,i)`
 present) — already the format PyG's `edge_index` wants directly.
+
+**That "no finer similarity signal to rank by" premise has now been tested, and it
+is false** (`experiments/edge_relatedness.py`, `outputs/edge_relatedness.csv`). The
+test uses the perpetrator columns as an *external label*: they are excluded from
+model input as leakage, so they have never touched training and are legitimate for
+evaluation. Restricting to edges whose endpoints are both solved with a known
+perpetrator profile, the measurement splits relatedness into what the blocking key
+contributes (`block_lift`) versus what the pairing inside the block contributes
+(`edge_lift`). Three results:
+
+- **`edge_lift` is 0 across all 9 (candidate × profile-definition) cells** (max
+  |0.0005|), confirming the shuffle-ring is an unbiased within-block random pairing.
+  So **per-edge importance is structurally meaningless here — the unit of any edge
+  analysis must be the block or the edge attribute, never the individual edge.**
+  This is why GAT attention, if added, must be read aggregated by edge attribute.
+- **`block_lift` orders weapon > geo > temporal** consistently: `geo` is substantial
+  (+0.0768 on perpetrator sex×race, +18.6% relative to its 0.4129 null), `temporal`
+  is ~0 (+0.0015). `weapon`'s +0.2200 is a construction artifact, not merit —
+  `WEAPON_BLOCK_COLS` blocks on victim sex/race and homicide is largely intraracial,
+  so victim race predicts perpetrator race. Same artifact as its homophily of 1.000.
+- **A blind similarity ranking inside the block beats random pairing everywhere**
+  (`oracle_lift_blind` > 0 in all 9 cells). For `geo`/relationship it is +0.0406,
+  *larger than that block's own* `block_lift` of +0.0304. So ranking within blocks is
+  a real available improvement — but **most of the apparent gain is sensitive-attribute
+  driven**: sighted +0.1163 vs blind +0.0186 on `geo`, a 6× gap. A naive
+  similarity-ranked rebuild would widen exactly the race-homophily leak this project
+  diagnosed. Any upgrade must rank on blind features, at ~1/6 the sighted gain.
+
+Unexpectedly, `temporal` has the *highest* `oracle_lift_blind` (+0.0452/+0.0524)
+despite the lowest `block_lift` — its blocks are large and heterogeneous, so ranking
+has the most room. The right reading is not "time carries no relatedness" but
+"Year+Month blocking with random pairing wastes it."
+
+Caveats: only solved–solved edges are checkable (unsolved cases have no perpetrator
+record); `oracle_lift` carries no CI, though it is stable across `--oracle_cap`
+1000/2000/3000 (blind geo 0.0186/0.0186/0.0191) and the sighted figures rise with
+cap, so those are lower bounds.
+
+**What that oracle actually ranks by is a 6-level step function, and better encodings
+mostly lose** (`clear/similarity.py`, `outputs/edge_relatedness_similarity.csv`).
+Because `03_features.py` one-hots without `drop_first` and keeps `Unknown` as its own
+category, every categorical field contributes exactly one 1 per row, so row L2 norms
+are near-constant (√6–√7) and **cosine similarity reduces to "fraction of fields that
+match"**. Inside a `geo` block `State` is constant, leaving 5 varying fields — so the
+similarity takes only ~6 distinct values. It shows: in the largest block (LA, 44,511
+rows) the median group of byte-identical feature rows is 2 but **50.2% of nodes could
+fill all k=20 neighbours from exact duplicates alone**, and only 34,189 of 190,326
+rows (18.0%) have a distinct blind feature vector. So `oracle_lift` measures the value
+of *finer exact-match blocking*, not of graded ranking.
+
+Three encodings were tried against that baseline via the same oracle (35 s, no
+training): IDF column weighting (`√(−log p_c)`, so a `Poison` match outweighs a
+`Handgun` match), ordinal/cyclic embedding (Age Group·Decade·Victim Count onto a
+quarter-circle, Month onto a full circle — both 2 columns with unit norm, so a dot
+product gives `cos` of the gap and stays a single BLAS call), and their combination.
+Results: **IDF loses in 9 cells out of 9** (mean −0.0044) — rare-category matches are
+rare precisely because they are noisy. **Ordinal wins only on `temporal`** (3/3,
++0.0066/+0.0007/+0.0045) and **loses on `geo`** (0.0207→0.0152 on the finest profile).
+`geo` blocks are already geographically homogeneous, so what is left to detect is
+exact co-occurrence, not proximity: grading age lets a 25–29 case partially match a
+30–34 case, and that dilutes rather than helps. The 6-level step function was the
+right representation there. Decision: **`geo` ranks on `onehot`, `temporal` on
+`ordinal`** — the scheme is a per-candidate parameter, not a global one. Scale: the
+best gain over `onehot` is +0.0066 (15% relative), so **encoding is a second-order
+effect; the first-order question is ranking-vs-shuffle at all.**
+
+**Building the ranked graph and training on it settles the question: ranking is worse,
+and why is the useful part.** `04_build_graph.py --rank {onehot,ordinal} [--control]`
+builds it (geo in 42 s, CPU — `04` stays torch-free); `clear.similarity.block_topk` is
+shared with the oracle so the measured gain and the built graph cannot drift apart.
+Ranking works exactly as designed — `edge_relatedness --edge_mode rank_onehot` shows
+`edge_lift` rising from ~0 to **+0.0155/+0.0205/+0.0393** across the three profile
+definitions, matching the oracle's predictions (+0.0186/+0.0207/+0.0406) to within
+0.003. But on blind geo over 3 seeds it **loses on every claimable metric**: MCC 0.2574
+vs 0.2628 for its degree-matched control and 0.2659 for shuffle — **−0.0054 against the
+control, 9.0× the seed std** (AUC −0.0056, 6.2×; Balanced Accuracy −0.0030, 10.0×).
+Race assortativity also *rises*, 0.1739 → 0.1938 (control 0.1629), despite ranking on
+blind features only. Worse on both axes, so not even a trade-off. Pre-registered rule
+says reject.
+
+The mechanism is measured, not guessed: the cosine between a node's **neighbourhood-mean
+feature vector and its own** goes 0.6432 (shuffle) → **0.9477** (ranked), with the
+control at 0.6373. Aggregating ranked neighbours hands back the node itself, so message
+passing carries no new information and the GNN degenerates toward an MLP.
+
+> **The graph's value here is contextual aggregation, not relatedness.** Twenty random
+> neighbours inside a block are an unbiased sample of that block's feature distribution
+> — an estimate of "what does this county look like" — and that is the signal. Ranking
+> replaces the estimate with a copy of the node and erases it.
+
+This retroactively explains two earlier findings: **`geo` beats `temporal`** because a
+county's composition predicts clearance (state clearance ranges 34%–93%) while
+"March 1993 across three states" does not; and **`aggr="max"` is clearly worse than
+`mean`** because max picks one extreme neighbour where mean summarises the distribution.
+It also yields a **pre-registered prediction for the model-swap track: GATv2 should
+underperform mean-aggregation GraphSAGE**, since attention concentrates weight on
+similar neighbours — the exact direction just measured to hurt.
+
+The degree-matched control was load-bearing, not ceremony. Shuffle-ring is essentially
+regular (geo degree std 2.63, temporal exactly 40 for every node) while ranking makes
+hubs (geo std 22.06, max degree 300) and drops 24% of edges through mutual-top-k dedup —
+so `rank` vs `shuffle` differs in ranking, degree distribution *and* density at once.
+Only `rank` vs `rank_control` isolates ranking. The plumbing (`--rank`, `--control`,
+`--edge_mode` on `train_gnn`/`edge_relatedness`/`edge_homophily`) is kept: block-size
+distributions change completely at national scale, and the control arm plus the
+neighbourhood-redundancy measure apply to any future graph intervention.
+
+The `mode` axis is deliberately separate from `edge_type`: `build_edge_index` splits
+`edge_type` on `_` to form unions (`geo_temporal`), so a `geo_rank` edge type would
+parse as "geo ∪ rank". Mode lives in the filename suffix instead
+(`edges_geo_k20_rank_onehot.npy`). `config.GNN_EDGE_MODE` defaults to **`None`, not the
+string `"shuffle"`** — `RUN_PARAMS` carries `edge_mode` and `from_run` drops `None`
+keys, so every pre-existing row's `params` JSON is byte-identical and re-running still
+*replaces* instead of duplicating.
+
+Normalization rule in `clear.similarity`: rank by **dot product, not cosine**, whenever
+weights are non-uniform — L2 would penalise exactly the rows carrying rare (informative)
+categories. Holding the query row fixed makes its own norm a constant across candidates,
+so the dot product ranks by `Σ_c w_c·1[match]` directly. Only `onehot` keeps cosine, to
+reproduce the already-published table. The same rule means **within-block constant
+fields need no removal** — they add the same value to every candidate, leaving argsort
+unchanged.
 
 **Everything shares one test split via `clear.data.get_split`**, so
 GraphSAGE's test metrics are directly comparable to the XGBoost baseline's —
@@ -577,6 +716,94 @@ redundant and invisible. `--blind` closes the direct path, and then the
 homophily measurement predicts the outcome correctly — see the blind-run
 findings below. Keep that ordering in mind before treating this table as a
 null result.
+
+**`experiments/detect_cold_blocks.py` is the "apply" stage: which case groupings went
+unsolved more than the model expected.** It is the defensible form of the "serial
+suspicion" idea — the dataset has no perpetrator ID, so *"these N cases share an
+offender"* is unverifiable in principle; what MAP's Hargrove algorithm actually does is
+**cluster-level anomaly detection**, and that this data supports. Per block:
+`O_b = Σ(1−y)`, `E_b = Σ(1−p̂)`, `SMR = O/E`, with two-sided p-values from a parametric
+bootstrap (`Σ Bernoulli(1−p̂)` simulated directly, since the normal approximation is
+poor for small or extreme-p blocks) and **BH FDR** across the hundreds of blocks. It is
+indirect standardization, the epidemiological SMR construction.
+
+Two things had to be fixed before the numbers meant anything, and both generalize:
+
+- **p̂ is not a calibrated probability.** `clear.gnn` trains with
+  `BCEWithLogitsLoss(pos_weight=neg/pos)`, so predictions are correctly *ranked* but
+  systematically shifted: on the test set the expected unsolved count exceeds the
+  observed by **+47.9%** (a50), +53.8% (`geo_blind`), +49.4% (`geo`). Used raw, nearly
+  every block reads "fewer unsolved than expected" and the test measures global
+  miscalibration rather than local anomaly. The fix is a single logit shift δ chosen so
+  `Σσ(logit p̂ + δ) = Σy` (δ = +0.7141 here, 30,253 → 38,953). One parameter, monotone,
+  so **rankings are untouched** and the priority list is unaffected; the global residual
+  becomes zero by construction, which is exactly what indirect standardization means.
+  **Any future use of these dumps as probabilities rather than scores needs this.**
+- **A blind, fairness-penalized model does not "remove race" from the expectation — it
+  does the opposite, and that is the point.** Because the model never sees race, race-
+  linked disparity is *not* absorbed into `E_b` and stays in the residual. A sighted
+  model would bake "this victim is Black, so expect it to go unsolved" into the
+  baseline and launder the disparity into normality — hiding the very thing the project
+  measures. Even blind-but-unmitigated is unusable here (FPR amplification 1.82); only
+  the α=50 model (FPR amplification 0.27) gives a **race-neutral baseline**. So the
+  correct claim is not "concentration unexplained by race" but *"concentration
+  unexplained by case mix, measured against a race-neutral baseline."*
+
+Findings (test set, `min_n=20`): `county` blocking gives 143 blocks, **5 cold / 15 warm**
+at FDR 5%; `hargrove` (State+City+Weapon+Victim Sex) gives 331 blocks, 16 cold / 19 warm.
+Top counties are Dallas (SMR 1.29, z 11.4), Wayne/Detroit (1.17, z 9.1), San Francisco
+(1.22), Genesee/Flint (1.29), Alameda/Oakland (1.08) — known low-clearance urban
+counties, so face validity holds. The centre of the result is that **the residual
+correlates with racial composition**: z ↔ `black_share` = **+0.292** (county) / +0.322
+(hargrove), with cold blocks averaging 0.623 Black share against warm blocks' 0.221 and
+an overall 0.227. Since the baseline is race-neutral, that correlation is a finding, not
+a nuisance — it is the project's "who gets forgotten" question expressed geographically.
+It is not exclusively a race story (Texas Cameron, SMR 1.90, is 0.000 Black share).
+
+**The load-bearing caveat: the model does not know what county a case is in.** `City` is
+a blocking key, not a feature — it is absent from `config.CATEGORICAL_COLS` and enters
+only indirectly through the graph. So `E_b` carries almost no county-specific effect and
+**z is effectively "how far does this county deviate from a state-and-case-mix
+baseline"**. Discrimination, investigative resourcing, urbanicity, and recording practice
+are **not separable** in this design (`Agency Type` only partly proxies urbanicity).
+The z-vs-race correlation must not be read causally, and that sentence has to travel with
+any map built on this table.
+
+**`experiments/map_figures.py` draws that table as a county choropleth** (`clear.counties`).
+`City` really is a county field here, so the choropleth — not a city dot map — is the
+correct form. No geopandas: GDAL/GEOS binaries are heavy and fragile on Windows, and all
+that is needed is a FIPS join, polygon coordinates, and an equal-area projection, which
+`json` + `numpy` cover. The same judgment carries into the national web map (no chart
+library, project in Python, ship SVG paths). Reference data (Census county codes, a
+FIPS-keyed county GeoJSON) is cached under `dataset/geo/`, gitignored and re-downloadable.
+The FIPS join is **143/143** on CA+TX+MI, but `clear.counties.ALIASES` and the unmatched-
+name printout stay, because national scale reintroduces independent cities
+(`Baltimore city` vs `Baltimore`), renames (`Dade` → `Miami-Dade`) and parishes.
+Projection is CONUS Albers **equal-area** — an equal-angle projection inflates large
+high-latitude counties and makes them look important.
+
+**The palette is computed, not eyeballed.** The blue arm is the documented sequential
+ramp; the red arm is generated at **matched OKLab lightness** per step, giving a worst
+arm-to-arm L error of 0.00105 with blue monotone 0.905→0.338 and the neutral gray at
+0.952, brighter than either arm's lightest step. Chroma is capped at 0.85 of the gamut
+boundary — the boundary itself yields a near-fluorescent red at mid lightness, which
+makes the colour rather than the data raise the alarm. Lightness is untouched, so the
+diverging symmetry holds.
+
+Three bugs surfaced only by rendering the figure and looking at it, and all three were
+the "plausible but wrong" kind:
+(1) **every county was being coloured, not just the significant ones** — `flag` is an
+empty string in memory but reads back from CSV as `NaN`, so `flag == ""` silently failed
+and 123 non-significant counties were painted as signal. Fixed to a three-tier encoding:
+significant → diverging colour, assessed-but-not-significant → neutral gray, not assessed
+→ hatch. This is the same discipline that keeps F1/Precision out of the accuracy claims,
+applied to a figure.
+(2) legend bands were off by one against `searchsorted`, so the legend named different
+numbers than the map drew.
+(3) only the first 3 steps of the 5-step ramp were used, so the strongest county (z=11.4)
+came out mid-red; `clear.counties.arms(n_steps)` now **subsamples the ramp evenly** so
+both extremes are always present. **Render and look at the output** — the validator
+checks colour, not whether the picture says what you think.
 
 **Trainers dump test predictions** (`clear.predictions`) joined to
 the unencoded sensitive attributes, so diagnosis reads CSVs and never
