@@ -70,7 +70,8 @@ def main():
 
     # 그래프는 alpha 격자 내내 동일하므로 한 번만 만들어 재사용한다(mitigate_graph와 달리
     # 개입이 손실 쪽에 있어 그래프가 안 바뀐다).
-    data = gnn.build_data(su.X, args.edge_type, args.k_neighbors, su.device)
+    data = gnn.build_data(su.X, args.edge_type, args.k_neighbors, su.device,
+                          minibatch=su.hp["minibatch"])
     print(f"[graph:{args.edge_type}] 엣지 {data.edge_index.shape[1]:,}개(방향)")
 
     for alpha in args.alphas:

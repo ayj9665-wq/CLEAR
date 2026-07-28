@@ -72,6 +72,9 @@ def default_hp():
         dropout=C.GNN_DROPOUT, lr=C.GNN_LR, weight_decay=C.GNN_WEIGHT_DECAY,
         aggr=C.GNN_AGGR, max_epochs=C.GNN_MAX_EPOCHS, patience=C.GNN_PATIENCE,
         val_size=C.GNN_VAL_SIZE,
+        minibatch=C.GNN_MINIBATCH, batch_size=C.GNN_BATCH_SIZE,
+        num_neighbors=C.GNN_NUM_NEIGHBORS, eval_batch_size=C.GNN_EVAL_BATCH_SIZE,
+        fair_min_count=C.GNN_FAIR_MIN_COUNT,
     )
 
 
@@ -81,11 +84,46 @@ def parse_seeds(s):
     return [int(x) for x in str(s).split(",") if x != ""]
 
 
-def build_data(X, edge_type, k, device, mode=None):
+def build_data(X, edge_type, k, device, mode=None, minibatch=False):
+    """그래프 Data 하나. minibatch면 **CPU에 둔다** — NeighborLoader가 CPU에서
+    샘플링하고 배치만 device로 올리는 구조라, 전체 그래프를 GPU에 올리면 애초에
+    미니배치를 쓰는 이유(전국 25M 엣지가 full-batch로 안 올라감)가 없어진다."""
     edges = build_edge_index(edge_type, k, mode)
     x = torch.tensor(X.values.astype(np.float32))
     edge_index = torch.from_numpy(edges).long()
-    return Data(x=x, edge_index=edge_index).to(device)
+    data = Data(x=x, edge_index=edge_index)
+    return data if minibatch else data.to(device)
+
+
+def _loader(data, input_idx, num_neighbors, batch_size, shuffle):
+    """NeighborLoader 한 개. import를 함수 안에 두는 이유는 full-batch 경로가
+    torch_geometric.loader를 건드리지 않게 하기 위함이다(기존 실행 경로 불변)."""
+    from torch_geometric.loader import NeighborLoader
+    return NeighborLoader(data, num_neighbors=list(num_neighbors),
+                          batch_size=batch_size,
+                          input_nodes=input_idx.detach().cpu(),
+                          shuffle=shuffle, num_workers=0)
+
+
+@torch.no_grad()
+def _infer(model, loader, device):
+    """loader가 가리키는 노드의 로짓. **loader는 재사용해야 한다** — 아래 참고.
+
+    이웃을 샘플링하지 않고 전부 쓴다(호출부가 num_neighbors=-1로 만든다). 학습은
+    fanout을 잘라도 되지만 추론은 안 된다: 여기서 나온 proba가 그대로 덤프되어
+    diagnose_fairness의 모든 격차, detect_cold_blocks의 E_b, 지도의 색까지 흘러가므로
+    샘플링 노이즈를 실으면 그 전부가 재현 불가능해진다. 조기 종료 신호(val MCC)도
+    같은 이유로 전체 이웃을 쓴다.
+
+    shuffle=False라 반환 순서는 input_nodes 순서 그대로다(호출부가 그렇게 쓴다).
+    """
+    model.eval()
+    out = []
+    for batch in loader:
+        batch = batch.to(device)
+        # NeighborLoader는 seed 노드를 배치 앞쪽 batch_size개에 놓는다.
+        out.append(model(batch.x, batch.edge_index).squeeze(-1)[:batch.batch_size].cpu())
+    return torch.cat(out) if out else torch.empty(0)
 
 
 def prepare(X, y, val_size, device):
@@ -112,7 +150,7 @@ def _group_gap(pred, codes_np):
     return float(max(rates) - min(rates)) if len(rates) >= 2 else 0.0
 
 
-def fairness_penalty(proba, codes):
+def fairness_penalty(proba, codes, min_count=0):
     """그룹 평균 예측확률의 (크기가중) 분산 — Demographic Parity의 미분가능 대리항.
 
     codes: 노드별 그룹 인덱스, -1은 벌점에서 제외(Unknown 등). 그룹이 둘이면
@@ -123,6 +161,14 @@ def fairness_penalty(proba, codes):
     벌점은 **학습 노드에서만** 계산한다(호출부가 train 인덱스를 넘긴다). 민감속성이
     학습 시점에만 필요하고 추론 시점엔 불필요하다는 게 이 방식의 요점이다 —
     후처리(mitigate_threshold)가 배포 시 인종을 알아야 하는 제약을 피한다.
+
+    미니배치 학습에서는 이 값이 **전체 학습 노드가 아니라 배치의** 그룹평균 분산이
+    된다. 추정량이 바뀌는 것이므로 두 가지가 따라온다. (1) 배치에 어떤 그룹이 너무
+    적게 들어오면 그 그룹 평균이 잡음이라 벌점이 엉뚱한 방향을 가리킨다 →
+    min_count 미만인 그룹은 뺀다(남은 그룹이 2개 미만이면 벌점 0). (2) 배치 그룹평균
+    분산은 각 그룹평균의 표본분산만큼 **위로 편향**돼 있다(대략 Σ w_g σ²/n_g). 배치를
+    키우면 줄어드는 양이지만 0은 아니므로, **alpha 값 자체는 full-batch 결과에서
+    이전되지 않는다** — 전국 확장에서 alpha를 다시 훑는 이유 중 하나다.
     """
     keep = codes >= 0
     if not torch.any(keep):
@@ -130,17 +176,24 @@ def fairness_penalty(proba, codes):
     p, c = proba[keep], codes[keep]
     overall = p.mean()
     pen = proba.sum() * 0.0
+    n_groups = 0
     for g in torch.unique(c):
         m = c == g
-        w = m.sum().to(p.dtype) / c.numel()
+        n_g = int(m.sum())
+        if n_g < min_count:
+            continue
+        n_groups += 1
+        w = n_g / c.numel()
         pen = pen + w * (p[m].mean() - overall) ** 2
-    return pen
+    return pen if n_groups >= 2 else proba.sum() * 0.0
 
 
 def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neighbors,
               hidden_dim, num_layers, dropout, lr, weight_decay, aggr,
               max_epochs, patience, val_size, tag, device, edge_mode=None,
-              fair_alpha=0.0, fair_codes=None, fair_beta=0.0, grad_clip=0.0):
+              fair_alpha=0.0, fair_codes=None, fair_beta=0.0, grad_clip=0.0,
+              minibatch=False, batch_size=None, num_neighbors=None,
+              eval_batch_size=None, fair_min_count=0):
     torch.manual_seed(seed)
     model = GraphSAGE(data.x.shape[1], hidden_dim, num_layers, dropout, aggr).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -158,19 +211,20 @@ def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neigh
     val_codes_np = (fair_codes[val_idx].cpu().numpy()
                     if (fair_beta > 0 and fair_codes is not None) else None)
 
-    best_score, best_val_mcc, best_gap = -np.inf, -1.0, np.nan
-    best_epoch, best_state, no_improve = 0, None, 0
-    t0 = time.time()
-    epoch = 0
+    # 그룹 최소 인원 floor는 **미니배치에서만** 건다. 그 floor가 존재하는 이유가
+    # 배치 표집 잡음이므로, 전체 학습 노드를 한 번에 보는 full-batch에서는 걸 이유가
+    # 없다 -- 그리고 걸지 않아야 full-batch 경로가 이 변경 전과 비트 단위로 같다.
+    min_count = fair_min_count if minibatch else 0
 
-    for epoch in range(1, max_epochs + 1):
-        model.train()
-        optimizer.zero_grad()
-        out = model(data.x, data.edge_index).squeeze(-1)
-        loss = criterion(out[train_idx], y[train_idx])
+    def _step(out, seed_idx):
+        """로짓 + 그 로짓에 대응하는 노드 인덱스 -> 손실. 두 경로가 공유한다."""
+        loss = criterion(out, y[seed_idx])
         if fair_alpha > 0 and fair_codes is not None:
             loss = loss + fair_alpha * fairness_penalty(
-                torch.sigmoid(out[train_idx]), fair_codes[train_idx])
+                torch.sigmoid(out), fair_codes[seed_idx], min_count)
+        return loss
+
+    def _backward(loss):
         loss.backward()
         if grad_clip and grad_clip > 0:
             # 높은 fair_alpha에서 벌점 gradient가 BCE를 압도해 스텝이 튀는 것을 막는다
@@ -178,12 +232,57 @@ def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neigh
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
 
+    # 로더는 **세 개 다 여기서 한 번만** 만든다. NeighborLoader 생성은 edge_index로
+    # CSC 인덱스를 새로 짜는 일이라, val 로더를 에폭마다 만들면 그 비용을 매 에폭
+    # 다시 치르고 메모리도 계속 붙든다 -- 실제로 3개 주 실행에서 상주 메모리가
+    # 1.8GB -> 5.3GB로 단조 증가했다. 전국은 노드가 3.4배라 그대로면 호스트가 죽는다.
+    if minibatch:
+        full_fanout = [-1] * num_layers
+        train_loader = _loader(data, train_idx, num_neighbors, batch_size, True)
+        val_loader = _loader(data, val_idx, full_fanout, eval_batch_size, False)
+        test_loader = _loader(data, test_idx, full_fanout, eval_batch_size, False)
+    else:
+        train_loader = val_loader = test_loader = None
+
+    def _train_epoch():
+        model.train()
+        if not minibatch:
+            optimizer.zero_grad()
+            out = model(data.x, data.edge_index).squeeze(-1)[train_idx]
+            loss = _step(out, train_idx)
+            _backward(loss)
+            return loss.item()
+        total, nb = 0.0, 0
+        for batch in train_loader:
+            batch = batch.to(device)
+            optimizer.zero_grad()
+            # seed 노드는 배치 앞쪽 batch_size개다. n_id는 원본 노드 번호라
+            # y·fair_codes(둘 다 전체 길이)를 그대로 인덱싱할 수 있다.
+            out = model(batch.x, batch.edge_index).squeeze(-1)[:batch.batch_size]
+            loss = _step(out, batch.n_id[:batch.batch_size])
+            _backward(loss)
+            total, nb = total + loss.item(), nb + 1
+        return total / max(nb, 1)
+
+    def _logits(idx, loader):
+        """평가용 로짓. 미니배치 경로에서도 **이웃을 전부** 쓴다(_infer 참고)."""
+        if minibatch:
+            return _infer(model, loader, device)
         model.eval()
         with torch.no_grad():
-            out = model(data.x, data.edge_index).squeeze(-1)
-            val_proba = torch.sigmoid(out[val_idx]).cpu().numpy()
-            val_pred = (val_proba >= 0.5).astype(int)
-            val_mcc = matthews_corrcoef(y[val_idx].cpu().numpy().astype(int), val_pred)
+            return model(data.x, data.edge_index).squeeze(-1)[idx].cpu()
+
+    best_score, best_val_mcc, best_gap = -np.inf, -1.0, np.nan
+    best_epoch, best_state, no_improve = 0, None, 0
+    t0 = time.time()
+    epoch = 0
+
+    for epoch in range(1, max_epochs + 1):
+        loss_val = _train_epoch()
+
+        val_proba = torch.sigmoid(_logits(val_idx, val_loader)).numpy()
+        val_pred = (val_proba >= 0.5).astype(int)
+        val_mcc = matthews_corrcoef(y[val_idx].cpu().numpy().astype(int), val_pred)
 
         val_gap = _group_gap(val_pred, val_codes_np)
         score = val_mcc if val_codes_np is None else val_mcc - fair_beta * val_gap
@@ -199,7 +298,7 @@ def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neigh
         if improved or epoch % 20 == 0:
             mark = "  *best*" if improved else ""
             extra = "" if val_codes_np is None else f"  val_gap {val_gap:.4f}"
-            print(f"[train:{edge_type}/seed{seed}] epoch {epoch:>3d}  loss {loss.item():.4f}  "
+            print(f"[train:{edge_type}/seed{seed}] epoch {epoch:>3d}  loss {loss_val:.4f}  "
                   f"val_mcc {val_mcc:.4f}{extra}{mark}")
 
         if no_improve >= patience:
@@ -211,10 +310,7 @@ def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neigh
           f"{gap_note}  ({train_seconds:.1f}s, {epoch}epoch)")
 
     model.load_state_dict(best_state)
-    model.eval()
-    with torch.no_grad():
-        out = model(data.x, data.edge_index).squeeze(-1)
-        test_proba = torch.sigmoid(out[test_idx]).cpu().numpy()
+    test_proba = torch.sigmoid(_logits(test_idx, test_loader)).numpy()
     y_test = y[test_idx].cpu().numpy().astype(int)
 
     metric_vals = evaluate(y_test, test_proba)   # 커밋된 평면 모델 덤프와 동일 지표·임계값
@@ -230,6 +326,11 @@ def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neigh
         "lr": lr, "weight_decay": weight_decay, "aggr": aggr,
         "max_epochs": max_epochs, "patience": patience, "val_size": val_size,
         "fair_alpha": fair_alpha, "fair_beta": fair_beta,
+        # full-batch면 셋 다 None -> results.from_run이 params에서 빼므로 기존 행의
+        # params JSON이 안 바뀐다(edge_mode와 같은 규약).
+        "minibatch": True if minibatch else None,
+        "batch_size": batch_size if minibatch else None,
+        "num_neighbors": list(num_neighbors) if minibatch else None,
         "best_val_gap": best_gap,
         "best_epoch": best_epoch, "train_seconds": round(train_seconds, 1),
         "n_params": sum(p.numel() for p in model.parameters()),
@@ -273,10 +374,16 @@ def train_eval(edge_type, k_neighbors, hp, seeds, tag, X, y_t, train_t, val_t, t
     data·extra가 없던 시절 mitigate_graph·mitigate_loss는 이 함수를 못 쓰고 seed
     루프를 각자 재구현했다 — "공용 함수가 정작 자기 호출부를 못 덮는" 상태였다.
     """
+    minibatch = bool(hp.get("minibatch"))
     if data is None:
-        data = build_data(X, edge_type, k_neighbors, device, edge_mode)
+        data = build_data(X, edge_type, k_neighbors, device, edge_mode, minibatch)
         print(f"[graph:{edge_type}/{edge_mode or 'shuffle'}] "
-              f"엣지 {data.edge_index.shape[1]:,}개(방향), k={k_neighbors}")
+              f"엣지 {data.edge_index.shape[1]:,}개(방향), k={k_neighbors}"
+              + ("  (CPU 상주, NeighborLoader)" if minibatch else ""))
+    elif minibatch and data.x.is_cuda:
+        # 호출부가 미리 만든 그래프를 넘겼는데(mitigate_loss가 그렇게 한다) GPU에
+        # 올라와 있으면 미니배치를 쓰는 의미가 없다. seed 루프 앞에서 한 번만 내린다.
+        data = data.cpu()
     rows, recorded = [], []
     for seed in seeds:
         row = train_one(edge_type, data, y_t, train_t, val_t, test_t,

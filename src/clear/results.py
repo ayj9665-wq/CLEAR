@@ -183,7 +183,10 @@ def write(new_rows, path=None):
 # 학습 한 번이 남기는 노브/부가 측정치. clear.gnn.train_one 반환 dict의 키와 맞춘다.
 RUN_PARAMS = ["edge_type", "edge_mode", "k_neighbors", "hidden_dim", "num_layers",
               "dropout", "lr", "weight_decay", "aggr", "max_epochs", "patience",
-              "val_size", "fair_alpha", "fair_beta", "grad_clip"]
+              "val_size", "fair_alpha", "fair_beta", "grad_clip",
+              # full-batch 실행에서는 셋 다 None이라 params에 안 들어간다 --
+              # 기존 행의 KEY가 유지된다(edge_mode·scope와 같은 규약).
+              "minibatch", "batch_size", "num_neighbors"]
 
 
 def from_run(row, family, *, attribute=None, blind=None, group_set=None):

@@ -42,6 +42,10 @@ def add_common_args(ap):
     ap.add_argument("--sighted", action="store_true",
                     help="민감속성 열을 X에 남긴 채 실행(기본은 blind). "
                          "인종이 X에 있으면 모델이 직접 읽으므로 완화 효과가 가려진다(보고서 §5-1).")
+    ap.add_argument("--minibatch", action="store_true", default=C.GNN_MINIBATCH,
+                    help="NeighborLoader 미니배치로 학습(전국 규모에 필수). "
+                         "**alpha 값은 full-batch 곡선에서 이전되지 않는다** — 벌점이 "
+                         "전체 학습 노드가 아니라 배치의 그룹평균 분산이 되기 때문(§10-2).")
     return ap
 
 
@@ -81,7 +85,8 @@ def setup(args):
     y_t, train_t, val_t, test_t = gnn.prepare(X, y, C.GNN_VAL_SIZE, device)
 
     # grad_clip은 10만 노출한다. train_one의 기본값과 같으므로 09에서도 무해하다.
-    hp = {**gnn.default_hp(), "grad_clip": getattr(args, "grad_clip", 0.0)}
+    hp = {**gnn.default_hp(), "grad_clip": getattr(args, "grad_clip", 0.0),
+          "minibatch": getattr(args, "minibatch", C.GNN_MINIBATCH)}
 
     return Setup(args=args, X=X, y=y, sens=sens, attr=args.attr,
                  attr_col=f"sens__{args.attr}", blind=blind, seeds=args.seeds,
@@ -105,6 +110,12 @@ def run_point(su, tag, data, family, params, notes=None, **train_kwargs):
 
     반환 (core, seed_rows) — core는 콘솔 출력·호출부 판단용 canonical 지표 dict.
     """
+    # 미니배치 실행은 tag가 달라야 한다. 같으면 (1) 예측 덤프가 full-batch 곡선의
+    # 덤프를 덮어쓰고 (2) results.csv에서 두 축의 점이 한 곡선으로 섞인다.
+    # 여기서 붙이는 이유는 mitigate_graph·mitigate_loss 둘 다 이 함수를 지나기 때문 —
+    # 호출부마다 붙이면 한쪽을 빠뜨렸을 때 조용히 섞인다.
+    if su.hp.get("minibatch"):
+        tag = f"{tag}_mb"
     seed_rows = gnn.train_eval(su.args.edge_type, su.args.k_neighbors, su.hp,
                                su.seeds, tag, su.X, su.y_t, su.train_t, su.val_t,
                                su.test_t, su.device, family=family, data=data,

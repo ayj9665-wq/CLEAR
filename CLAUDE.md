@@ -52,6 +52,10 @@ python -m experiments.train_gnn --edge_type all                                 
 python -m experiments.train_gnn --edge_type geo --hidden_dim 128 --tag my_sweep # any hyperparam overridable via CLI
 python -m experiments.train_gnn --edge_type geo --k_neighbors 20                # use a --k 20 graph built above
 python -m experiments.train_gnn --edge_type geo --seeds 42,43,44                # torch seeds to repeat over (split stays fixed)
+python -m experiments.train_gnn --edge_type geo --blind --minibatch --tag blind_mb
+                                    # NeighborLoader mini-batch (required at national scale;
+                                    # dumps to graphsage_geo_blind_mb.csv, NOT comparable to
+                                    # full-batch rows — see the bridge-run note below)
 python -m experiments.train_gnn --edge_type geo_temporal                        # union of geo+temporal edges
 python -m experiments.train_gnn --blind        # race/sex/ethnicity dummies dropped from X (graph unchanged)
 
@@ -150,6 +154,31 @@ re-run still *replaces* instead of duplicating. Injecting it in `rows()` rather 
 each call site is deliberate — `rows()` is the one funnel every family passes through,
 and a missed call site would let a national run overwrite three-state rows in a tracked
 file.
+
+**`--minibatch` (NeighborLoader) is the other half, and it is a separate axis, not a
+speedup.** National `geo` is 25.0M directed edges — ~20 GB for 2 layers plus backward,
+against 12.9 GB, so full-batch is out. Training samples `config.GNN_NUM_NEIGHBORS`
+(`[25, 10]`) per layer, but **val/test inference uses every neighbour**: the dumped
+`proba` feeds every fairness gap, `detect_cold_blocks`'s `E_b`, and the map's colours,
+so sampling noise there would propagate into all of it. The three loaders are built once
+per `train_one` — building the val loader per epoch rebuilds the CSC index every time and
+walked resident memory from 1.8 GB to 5.3 GB on three states alone. Dumps and tags get an
+`_mb` suffix (`graphsage_geo_blind_mb.csv`), applied in `train_gnn` and in
+`sweep.run_point` so both mitigation scripts inherit it; without it a bridge run
+overwrites the very full-batch dump it is meant to be compared against. Needs `pyg-lib`
+(PyG's own wheel index — `torch-sparse` has no wheel for win/torch2.6+cu124/cp313), but
+only when `--minibatch` is used: the loader import sits inside the function.
+
+**The bridge run says accuracy carries over and fairness does not.** Three-state blind
+`geo`, 3 seeds each, mini-batch minus full-batch: AUC +0.00007 (0.06× the full-batch seed
+std), MCC +0.00069 (1.45×), Balanced Accuracy −0.00253 (3.90×). Small — and consistent
+with the graph's value here being *an unbiased sample of the block's feature
+distribution*, which sampling 25 of ~40 neighbours preserves. But the **operating point
+moves**: predicted clearance 53.2% → 60.7% (actual 68.2%), and race amplification
+**1.48 [1.24, 1.78] → 1.26 [1.04, 1.54], paired difference +0.23 [+0.13, +0.34]**, CI
+excluding zero. Every fairness number here is threshold-dependent, so **national results
+compare only against three-state *mini-batch* values**. The full-batch 1.48 is a number
+on a different axis.
 
 **Two tiers: an ordered pipeline, and an unordered experiment surface.**
 `src/01_clean.py` … `src/04_build_graph.py` are the pipeline — each reads what

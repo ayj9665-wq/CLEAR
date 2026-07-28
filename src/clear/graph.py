@@ -35,8 +35,18 @@ def build_edge_index(edge_type, k, mode=None):
 
     mode는 그래프 구성 방식(None=셔플-링, rank_*=유사도 랭킹)이며 합집합의 모든
     항에 동일하게 적용된다.
+
+    반환 배열은 **반드시 C 연속**이다. 이유가 사소하지 않다: 옛 04_build_graph.py는
+    `np.unique(pairs, axis=0).T.astype(...)`로 만들었는데 `astype`의 기본 order='K'가
+    전치 순서를 보존해 저장된 .npy가 **Fortran 순서**였다(합집합 분기의 `.T`도 같다).
+    full-batch 경로는 torch가 stride를 알아서 처리해 이게 드러나지 않았지만,
+    NeighborLoader가 쓰는 pyg-lib의 index_sort는 연속 입력을 요구해
+    "Input should be contiguous"로 죽는다. 저장 형식이 아니라 **로딩 지점에서**
+    보장하는 이유는 이미 저장된 파일들을 그대로 쓰기 위해서다.
     """
     if "_" in edge_type:
         arrs = [load_edges(part, k, mode) for part in edge_type.split("_")]
-        return np.unique(np.concatenate(arrs, axis=1).T, axis=0).T.astype(np.int64)
-    return load_edges(edge_type, k, mode)
+        out = np.unique(np.concatenate(arrs, axis=1).T, axis=0).T.astype(np.int64)
+    else:
+        out = load_edges(edge_type, k, mode)
+    return np.ascontiguousarray(out)
