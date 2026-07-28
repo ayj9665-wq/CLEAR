@@ -106,9 +106,9 @@ def main():
                       f"{r['diff']:+.2f}배 [{r['diff_lo']:+.2f}, {r['diff_hi']:+.2f}]  {verdict}")
 
     paths_out = [
-        (C.OUTPUT_DIR / "fairness_group_metrics.csv", all_groups),
-        (C.OUTPUT_DIR / "fairness_gaps.csv", all_gaps),
-        (C.OUTPUT_DIR / "fairness_model_contrasts.csv", all_contrasts),
+        (C.scoped_output("fairness_group_metrics.csv"), all_groups),
+        (C.scoped_output("fairness_gaps.csv"), all_gaps),
+        (C.scoped_output("fairness_model_contrasts.csv"), all_contrasts),
     ]
     print()
     for p, frames in paths_out:

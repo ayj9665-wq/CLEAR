@@ -29,8 +29,16 @@ prepared artifacts and has **no order among itself**, so those run as modules.
 pip install -r requirements.txt
 cd src
 
+# --- scope (which sample everything below operates on) ----------------------
+# Unset  = "ca_tx_mi" (California+Texas+Michigan, 190,326 rows) — every path below
+#          is exactly as it has always been.
+# Set    = "national" (no state filter, 638,454 rows) — sample/features/graph move
+#          to data/processed/national/, dumps to outputs/predictions/national/,
+#          result CSVs to outputs/national/. results.csv stays shared.
+export CLEAR_SCOPE=national         # (or CLEAR_SCOPE=national python ... per command)
+
 # --- data pipeline (ordered; each stage reads what the previous one wrote) ---
-python 01_clean.py            # raw CSV -> data/processed/clean.parquet
+python 01_clean.py            # raw CSV -> data/processed/clean.parquet  (scope-independent)
 python 02_sample.py           # -> data/processed/sample.parquet
 python 03_features.py         # -> data/processed/features.parquet
 python 04_build_graph.py      # -> data/processed/graph/edges_{geo,temporal,weapon}_k{k}.npy (k=config.K_NEIGHBORS)
@@ -105,6 +113,43 @@ citations across the fairness and benchmark reports depend on this.
 the single source of truth for paths, target encoding, column lists, and
 hyperparameters (random state, split ratios, CV folds). When changing any of
 these, edit `config.py` rather than a script.
+
+**Scope is an axis, because the national extension re-runs the whole pipeline.**
+`CLEAR_SCOPE` (`ca_tx_mi` default, `national`) picks the sample, and
+`config.SAMPLE_STATES` is *derived* from it — one switch, so the state filter and
+the output paths cannot drift apart. Three things follow, and the reasons are not
+interchangeable:
+
+- **`C.SCOPE_DIR`** holds `sample.parquet`/`features.parquet`/`graph/`; **`C.scoped_output(name)`**
+  holds the result CSVs and figures; **`predictions_dir()`** holds the dumps. In the
+  default scope all three resolve to exactly the old paths, so nothing moved and
+  there was no migration.
+- **`clean.parquet` stays outside the scope.** `01_clean.py` has no state filter, so
+  its output is already national and both scopes share it. Scoping it would make a
+  national run look for a file that is never written.
+- **`results.csv` is *not* split by scope.** It's long format and `scope` rides in
+  `params`, so one file separates by groupby — the "a new metric is new rows, not a
+  new column" rule applied to samples.
+
+The dump directory split is the load-bearing part, not tidiness. `row_index` in a
+prediction dump is a **row position into `features.parquet`**, and `diagnose_fairness`
+`iloc`s it into `load_sensitive()`. Point that at a different sample and the sensitive
+attributes join to the wrong rows while still producing a plausible table —
+`assert_same_test_set` compares dumps to each other, so it passes. That would silently
+void the committed flat-model dumps the headline
+`graphsage_geo_blind − xgboost_blind = +0.82` rests on. Directory isolation is the
+primary guard (`discover()` doesn't recurse, and the legacy `outputs/predictions_*.csv`
+fallback is gated to the default scope); `assert_same_test_set` additionally rejects a
+dump whose max `row_index` exceeds the current scope's row count, which catches files
+moved by hand.
+
+`config.scope_param()` returns `{}` in the default scope and `clear.results.rows()`
+merges it into `params` — **`None`-by-default for the same reason `GNN_EDGE_MODE` is**:
+existing rows' `params` JSON stays byte-identical, so their identity KEY holds and a
+re-run still *replaces* instead of duplicating. Injecting it in `rows()` rather than at
+each call site is deliberate — `rows()` is the one funnel every family passes through,
+and a missed call site would let a national run overwrite three-state rows in a tracked
+file.
 
 **Two tiers: an ordered pipeline, and an unordered experiment surface.**
 `src/01_clean.py` … `src/04_build_graph.py` are the pipeline — each reads what
@@ -708,6 +753,12 @@ sex, which makes it a perfect proxy by construction and a standing warning
 against `--edge_type weapon`; `temporal` is ~0 on both (a useful null
 control); `geo` is race-assortative (0.174, neighbour-majority recovers race
 +7.8pp over the majority baseline) but **not** sex-assortative (0.019, +0.0pp).
+**At national scope `geo`'s race assortativity *rises* to 0.2308 and the recovery
+lift to +18.9pp** (`temporal` stays ~0 at 0.0033, `weapon` stays 1.000): the same
+county blocking spans the whole country's segregation range instead of three
+states', so the proxy path this project diagnosed gets *stronger* with scale, not
+weaker. Pre-registered consequence — the national blind `geo` run should amplify
+*above* the three-state 1.48.
 Read against the sighted-model diagnosis alone this looks *backwards* — the
 significant GraphSAGE-over-XGBoost amplification was on *sex* (where geo
 carries no signal) and unresolvable on *race* (where it does). The confound

@@ -48,7 +48,7 @@ plt.rcParams.update({
     "grid.linewidth": 1.0,
 })
 
-OUT = C.OUTPUT_DIR
+OUT = C.scoped_output()            # 스코프별 출력 디렉터리(기본 스코프면 outputs/)
 
 
 def _clean_axes(ax):

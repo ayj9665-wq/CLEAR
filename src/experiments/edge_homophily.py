@@ -108,7 +108,7 @@ def main():
         print(f"  [{et}/{args.edge_mode or 'shuffle'}] 측정 완료")
 
     df = pd.DataFrame(rows)
-    out = C.OUTPUT_DIR / (args.out or "edge_homophily.csv")
+    out = C.scoped_output(args.out or "edge_homophily.csv")
     df.to_csv(out, index=False, encoding="utf-8-sig")
 
     for attr, sub in df.groupby("attribute"):

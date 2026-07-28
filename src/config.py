@@ -7,6 +7,32 @@ CLEAR 프로젝트 공통 설정.
 import os
 from pathlib import Path
 
+# ---- 분석 스코프 (3개 주 / 전국) ----
+# 전국 확장(확장설계서 §10-0)은 파이프라인을 처음부터 다시 돌리는데, 산출물 경로에
+# 스코프 개념이 없으면 전국 실행이 3개 주 산출물을 **덮어쓴다**. 단순한 파일 손실이
+# 아니라 조용한 오염이 문제다:
+#
+#   outputs/predictions/*.csv의 row_index는 features.parquet의 **행 위치**이고
+#   diagnose_fairness는 그걸로 load_sensitive()를 iloc한다. features를 전국으로
+#   갈아끼우면 커밋된 평면 모델 덤프 4개가 엉뚱한 행의 민감속성과 조인되면서도
+#   **에러 없이 그럴듯한 표**를 낸다(assert_same_test_set은 덤프끼리만 비교하므로
+#   통과한다). 헤드라인 graphsage_geo_blind - xgboost_blind = +0.82가 조용히
+#   무효가 되는 경로이며, _assert_blind가 막으려던 것과 같은 종류의 실패다.
+#
+# 스위치는 환경변수 하나뿐이다. SAMPLE_STATES를 여기서 유도하는 이유가 그것 —
+# 스코프와 주 목록을 따로 두면 둘이 어긋난 채로 돌아간다.
+DEFAULT_SCOPE = "ca_tx_mi"
+SCOPES = {
+    "ca_tx_mi": ["California", "Texas", "Michigan"],
+    "national": None,                    # None = 주 필터 없음(전국 638,454행)
+}
+SCOPE = os.environ.get("CLEAR_SCOPE") or DEFAULT_SCOPE
+if SCOPE not in SCOPES:
+    raise ValueError(
+        f"CLEAR_SCOPE={SCOPE!r}는 모르는 스코프다. 가능한 값: {sorted(SCOPES)}. "
+        f"오타를 그냥 통과시키면 새 빈 스코프 디렉터리가 생기고, 거기서 나온 결과가 "
+        f"어느 표본의 것인지 알 수 없게 된다.")
+
 # ---- 경로 ----
 SRC_DIR = Path(__file__).resolve().parent
 ROOT = SRC_DIR.parent
@@ -16,6 +42,42 @@ OUTPUT_DIR = ROOT / "outputs"
 
 PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# 스코프별 중간 산출물(sample/features/graph)이 사는 곳.
+#
+# **기본 스코프에서는 PROCESSED_DIR과 같은 디렉터리다** — 3개 주 산출물은 자리를
+# 안 옮기므로 마이그레이션이 0이고, 기존 실행 경로가 한 글자도 안 바뀐다.
+#
+# clean.parquet은 여기 들어오지 않고 PROCESSED_DIR 루트에 남는다: 01_clean.py는
+# 주 필터가 없어 산출물이 이미 전국이고 두 스코프가 공유한다. 이것까지 스코프
+# 안으로 넣으면 전국 실행이 존재하지도 않는 processed/national/clean.parquet을 찾는다.
+SCOPE_DIR = PROCESSED_DIR if SCOPE == DEFAULT_SCOPE else PROCESSED_DIR / SCOPE
+SCOPE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def scoped_output(name=None):
+    """스코프별 결과 파일 경로. name이 없으면 디렉터리 자체.
+    기본 스코프면 outputs/ 바로 아래(기존과 동일).
+
+    cold_blocks.csv·fairness_*.csv·edge_homophily.csv 등은 tracked 실험 기록이라
+    전국 실행이 덮어쓰면 그대로 손실이다. results.csv만은 예외로 스코프를 안 쪼갠다 --
+    long format이고 scope가 params에 들어가므로 한 파일에서 groupby로 갈린다
+    ("지표 추가는 열이 아니라 행"의 스코프 버전).
+    """
+    d = OUTPUT_DIR if SCOPE == DEFAULT_SCOPE else OUTPUT_DIR / SCOPE
+    d.mkdir(parents=True, exist_ok=True)
+    return d if name is None else d / name
+
+
+def scope_param():
+    """results.csv의 params에 넣을 스코프 조각. **기본 스코프면 빈 dict.**
+
+    GNN_EDGE_MODE가 문자열 "shuffle"이 아니라 None이어야 했던 것과 같은 이유다 --
+    기본값이 params에 안 들어가야 기존 행의 JSON이 한 글자도 안 바뀌고, identity
+    KEY가 유지되고, 재실행이 중복이 아니라 교체로 남는다. 기본 스코프에서 {"scope":
+    "ca_tx_mi"}를 넣으면 과거 행 전부와 KEY가 갈려 results.csv가 두 배로 부푼다.
+    """
+    return {} if SCOPE == DEFAULT_SCOPE else {"scope": SCOPE}
 
 # ---- joblib/multiprocessing 임시 폴더 (Windows, 비ASCII 사용자명 대응) ----
 # 기본 TEMP가 사용자명(예: 한글)을 포함하면, joblib의 resource_tracker가
@@ -72,7 +134,10 @@ SENSITIVE_FEATURE_COLS = ["Victim Race", "Victim Sex", "Victim Ethnicity"]
 # 전국 풀링 대신 이 조합을 쓰는 이유: 주별 검거율 편차가 커서(예: SC 90.8% vs
 # NY 54.1%) 전국을 그대로 합치면 인종 격차 분석이 심슨의 역설에 걸릴 위험이
 # 있다. 지역·인종 다양성은 확보하면서 논문과 비교 가능한 조합. None 이면 전체 사용.
-SAMPLE_STATES = ["California", "Texas", "Michigan"]
+#
+# 값은 SCOPE에서 유도한다(위 SCOPES 표) -- 주 목록과 산출물 경로가 한 스위치에
+# 묶여 있어야, 전국 데이터를 3개 주 경로에 쓰는 식으로 어긋나지 않는다.
+SAMPLE_STATES = SCOPES[SCOPE]
 # 표본 상한(메모리·학습속도). None 이면 주 전체 사용.
 SAMPLE_MAX_ROWS = None
 
@@ -91,7 +156,7 @@ TEST_SIZE = 0.30           # 논문: 70/30
 CV_FOLDS = 5              # 논문: 5-fold 층화 CV
 
 # ---- 그래프 구성 (04_build_graph.py) ----
-GRAPH_DIR = PROCESSED_DIR / "graph"
+GRAPH_DIR = SCOPE_DIR / "graph"
 GRAPH_DIR.mkdir(parents=True, exist_ok=True)
 
 # 노드당 신규 이웃 상한(차수 상한). 대칭화 후 실제 차수는 k~2k 사이.

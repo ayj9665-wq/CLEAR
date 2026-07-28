@@ -226,7 +226,7 @@ def main():
         raise SystemExit(f"[에러] 덤프 없음: {path}\n"
                          f"  먼저 실행: python -m experiments.mitigate_loss --alphas 50")
     dump = predictions.load(path)
-    sample = pd.read_parquet(C.PROCESSED_DIR / "sample.parquet")
+    sample = pd.read_parquet(C.SCOPE_DIR / "sample.parquet")
 
     # row_index는 features/sample.parquet의 행 위치라 그대로 join된다.
     keys = sorted({c for b in args.blocks for c in BLOCK_KEYS[b]})
@@ -283,7 +283,7 @@ def main():
                    "z_black_share_corr": round(corr, 3)}))
 
     if all_rows:
-        out = C.OUTPUT_DIR / "cold_blocks.csv"
+        out = C.scoped_output("cold_blocks.csv")
         pd.concat(all_rows, ignore_index=True).to_csv(
             out, index=False, encoding="utf-8-sig")
         print(f"\n[save] {out}")

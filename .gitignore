@@ -4,6 +4,11 @@ data/processed/
 outputs/*.png
 outputs/*.pkl
 outputs/*.joblib
+# 스코프 하위 디렉터리(outputs/national/ 등)의 그림도 같이 제외한다.
+# 같은 디렉터리의 결과 CSV는 3개 주 것과 마찬가지로 **커밋한다** — 실험 기록이다.
+outputs/*/*.png
+outputs/*/*.pkl
+outputs/*/*.joblib
 # test 노드별 예측 덤프(설정당 ~2MB). 대부분 재실행으로 재생성 가능하므로 제외.
 # 작은 결과 CSV(results.csv 등)는 실험 기록이므로 커밋한다.
 #

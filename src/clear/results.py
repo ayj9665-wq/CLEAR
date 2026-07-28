@@ -142,6 +142,12 @@ def rows(family, metrics, *, model=None, tag=None, seed=None, attribute=None,
     """
     ci, std = ci or {}, std or {}
     ts = timestamp or datetime.now().isoformat(timespec="seconds")
+    # 스코프를 여기서 주입하는 이유: rows()가 모든 family(train/mitigate_*/cold_blocks…)의
+    # 공통 통로라, 호출부마다 넣으면 한 곳을 빠뜨렸을 때 전국 결과가 3개 주 결과와
+    # 같은 KEY를 갖고 **교체**해 버린다(results.csv는 tracked 실험 기록이다).
+    # 기본 스코프에서는 빈 dict라 기존 행의 params JSON이 한 글자도 안 바뀐다 --
+    # config.scope_param() 주석 참고(GNN_EDGE_MODE=None과 같은 규약).
+    params = {**(params or {}), **C.scope_param()}
     params_s, notes_s = _dump(params), _dump(notes)
     out = []
     for name, value in metrics.items():

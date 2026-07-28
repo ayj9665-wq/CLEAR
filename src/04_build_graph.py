@@ -53,14 +53,25 @@ def _block_edges(idx, k, seed):
     return np.stack([src, dst])
 
 
-def _symmetrize(directed):
-    """방향 쌍을 무방향(양방향 모두 저장, PyG 포맷)으로. self-loop·중복 제거."""
+def _symmetrize(directed, n_nodes):
+    """방향 쌍을 무방향(양방향 모두 저장, PyG 포맷)으로. self-loop·중복 제거.
+
+    중복 제거를 `np.unique(directed.T, axis=0)`로 하지 않는 이유는 규모다. 전국
+    (geo 방향 엣지 약 25M)에서 그 경로는 비연속 전치 뷰의 복사 + 2열 lexsort라
+    GB 단위 임시 버퍼를 잡는다. 쌍을 `src*n + dst` 정수 하나로 접으면 1차원
+    np.unique로 **같은 결과를** 절반 이하 메모리로 얻는다 -- 정렬 순서도 그대로다
+    (src*n+dst의 오름차순 = (src, dst) lexsort). n=638,454에서 최대 키는 4.1e11로
+    int64(9.2e18)에 한참 못 미친다.
+
+    노드 id는 int32로 돌려준다(638k는 여유). 엣지 배열이 절반이 되고, PyG 쪽은
+    clear.gnn이 .long()으로 올리므로 무손실이다.
+    """
     if directed.shape[1] == 0:
-        return directed
+        return directed.astype(np.int32)
     both = np.concatenate([directed, directed[::-1]], axis=1)
     both = both[:, both[0] != both[1]]
-    pairs = np.unique(both.T, axis=0)
-    return pairs.T.astype(np.int64)
+    key = np.unique(both[0].astype(np.int64) * n_nodes + both[1])
+    return np.stack([key // n_nodes, key % n_nodes]).astype(np.int32)
 
 
 def build_block_graph(df, block_cols, k, base_seed, Z=None):
@@ -81,7 +92,7 @@ def build_block_graph(df, block_cols, k, base_seed, Z=None):
             src = np.repeat(idx, nb.shape[1])
             parts.append(np.stack([src, idx[nb.ravel()]]))
     directed = np.concatenate(parts, axis=1) if parts else np.empty((2, 0), dtype=np.int64)
-    return _symmetrize(directed)
+    return _symmetrize(directed, len(df))
 
 
 def degree_matched_control(df, block_cols, edges, n_nodes, base_seed):
@@ -113,7 +124,7 @@ def degree_matched_control(df, block_cols, edges, n_nodes, base_seed):
         half = (len(stubs) // 2) * 2
         parts.append(stubs[:half].reshape(2, -1, order="F"))
     directed = np.concatenate(parts, axis=1) if parts else np.empty((2, 0), dtype=np.int64)
-    return _symmetrize(directed)
+    return _symmetrize(directed, n_nodes)
 
 
 def graph_stats(edges, n_nodes):
@@ -122,7 +133,10 @@ def graph_stats(edges, n_nodes):
     deg = np.zeros(n_nodes, dtype=np.int64)
     if e_directed > 0:
         np.add.at(deg, edges[0], 1)
-    adj = coo_matrix((np.ones(e_directed), (edges[0], edges[1])), shape=(n_nodes, n_nodes))
+    # 데이터 값은 연결 여부만 보므로 int8로 잡는다. 전국 geo는 방향 엣지가 25M대라
+    # float64면 이 배열 하나가 400MB, csr 변환분까지 하면 GB 단위로 뛴다.
+    adj = coo_matrix((np.ones(e_directed, dtype=np.int8), (edges[0], edges[1])),
+                     shape=(n_nodes, n_nodes))
     n_components, labels = connected_components(adj, directed=False)
     comp_sizes = np.bincount(labels)
     return {
@@ -157,8 +171,8 @@ def main():
     k = args.k
     mode = f"rank_{args.rank}" if args.rank else None
 
-    sample_df = pd.read_parquet(C.PROCESSED_DIR / "sample.parquet")
-    feat_df = pd.read_parquet(C.PROCESSED_DIR / "features.parquet")
+    sample_df = pd.read_parquet(C.SCOPE_DIR / "sample.parquet")
+    feat_df = pd.read_parquet(C.SCOPE_DIR / "features.parquet")
     assert len(sample_df) == len(feat_df), "행 수 불일치: sample vs features"
     assert (sample_df[C.TARGET_BIN].values == feat_df[C.TARGET_BIN].values).all(), \
         "행 순서 불일치: sample.parquet과 features.parquet이 위치 기준으로 정렬돼 있지 않음"
@@ -210,7 +224,7 @@ def main():
                          "mode": arm_mode or "shuffle", **stats})
 
     table = pd.DataFrame(rows)
-    out_csv = C.OUTPUT_DIR / "graph_edge_comparison.csv"
+    out_csv = C.scoped_output("graph_edge_comparison.csv")
     # 열이 늘었으므로(mode/degree_*) append가 아니라 **읽고 합쳐 다시 쓴다**.
     # 헤더보다 필드가 많은 행을 append하면 pandas가 그 파일을 아예 못 읽게 된다 --
     # 옛 metrics.csv가 정확히 그렇게 망가졌다(CLAUDE.md의 ParserError 사례).

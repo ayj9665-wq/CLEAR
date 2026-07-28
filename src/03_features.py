@@ -35,7 +35,7 @@ def bin_age(df):
 
 
 def main():
-    df = pd.read_parquet(C.PROCESSED_DIR / "sample.parquet")
+    df = pd.read_parquet(C.SCOPE_DIR / "sample.parquet")
     print(f"[load] sample {len(df):,}행")
 
     # 민감속성·타깃 먼저 분리 보관(원본 값 유지)
@@ -67,7 +67,7 @@ def main():
     X = pd.concat([X_num, X_cat.reset_index(drop=True)], axis=1)
     out_df = pd.concat([X, keep.reset_index(drop=True)], axis=1)
 
-    out = C.PROCESSED_DIR / "features.parquet"
+    out = C.SCOPE_DIR / "features.parquet"
     out_df.to_parquet(out, index=False)
     feat_n = X.shape[1]
     print(f"[save] {out}  (샘플 {len(out_df):,} / 특성 {feat_n}열)")
