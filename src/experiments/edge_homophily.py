@@ -60,8 +60,8 @@ def neighbor_recovery(edges, codes, n_groups):
     return acc, float(has_nbr.mean())
 
 
-def measure(edge_type, k, sens):
-    edges = load_edges(edge_type, k)
+def measure(edge_type, k, sens, mode=None):
+    edges = load_edges(edge_type, k, mode)
     rows = []
     for attr in ATTRS:
         codes, cats = _codes(sens[attr])
@@ -72,7 +72,7 @@ def measure(edge_type, k, sens):
         h0 = float((p ** 2).sum())
         acc, cov = neighbor_recovery(edges, codes, g)
         rows.append({
-            "edge_type": edge_type, "k": k,
+            "edge_type": edge_type, "k": k, "edge_mode": mode or "shuffle",
             "attribute": attr.replace("sens__", ""),
             "n_edges_directed": int(edges.shape[1]),
             "homophily": h,
@@ -91,6 +91,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--k", type=int, default=C.K_NEIGHBORS)
     ap.add_argument("--edge_types", nargs="*", default=["geo", "temporal", "weapon"])
+    ap.add_argument("--edge_mode", default=None,
+                    help="그래프 구성 방식(기본 None=셔플-링). 'rank_onehot' 등을 주면 "
+                         "04_build_graph.py --rank이 만든 그래프의 동종성을 잰다.")
+    ap.add_argument("--out", default=None,
+                    help="출력 CSV 이름(기본 edge_homophily.csv). 후보 일부만 재는 "
+                         "실행이 추적 중인 전체 표를 덮지 않게 할 때 쓴다.")
     args = ap.parse_args()
 
     sens = load_sensitive()
@@ -98,11 +104,11 @@ def main():
 
     rows = []
     for et in args.edge_types:
-        rows += measure(et, args.k, sens)
-        print(f"  [{et}] 측정 완료")
+        rows += measure(et, args.k, sens, args.edge_mode)
+        print(f"  [{et}/{args.edge_mode or 'shuffle'}] 측정 완료")
 
     df = pd.DataFrame(rows)
-    out = C.OUTPUT_DIR / "edge_homophily.csv"
+    out = C.OUTPUT_DIR / (args.out or "edge_homophily.csv")
     df.to_csv(out, index=False, encoding="utf-8-sig")
 
     for attr, sub in df.groupby("attribute"):

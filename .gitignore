@@ -34,3 +34,6 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# 지도 참조 데이터(공개, 재다운로드 가능)
+dataset/geo/
