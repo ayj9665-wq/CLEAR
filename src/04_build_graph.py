@@ -31,6 +31,9 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 
 import config as C
+from clear import similarity
+from clear.data import load_xy
+from clear.graph import edges_path
 
 
 def _block_edges(idx, k, seed):
@@ -60,11 +63,55 @@ def _symmetrize(directed):
     return pairs.T.astype(np.int64)
 
 
-def build_block_graph(df, block_cols, k, base_seed):
+def build_block_graph(df, block_cols, k, base_seed, Z=None):
+    """블록별 엣지 생성 후 대칭화.
+
+    Z가 None이면 셔플-링(무작위 k개). Z를 주면 **유사도 상위 k개**로 잇는다
+    (clear.similarity.block_topk). 어느 쪽이든 블록별 시드는 crc32로 계산해
+    프로세스 재실행 간 재현성을 유지한다 -- Python hash()는 실행마다 달라진다.
+    """
     parts = []
     for block_key, sub in df.groupby(block_cols, sort=False):
+        idx = sub.index.to_numpy()
         seed = (base_seed + zlib.crc32(str(block_key).encode())) % (2 ** 31)
-        parts.append(_block_edges(sub.index.to_numpy(), k, seed))
+        if Z is None:
+            parts.append(_block_edges(idx, k, seed))
+        elif len(idx) > 1:
+            nb = similarity.block_topk(Z, idx, k, seed)
+            src = np.repeat(idx, nb.shape[1])
+            parts.append(np.stack([src, idx[nb.ravel()]]))
+    directed = np.concatenate(parts, axis=1) if parts else np.empty((2, 0), dtype=np.int64)
+    return _symmetrize(directed)
+
+
+def degree_matched_control(df, block_cols, edges, n_nodes, base_seed):
+    """랭킹 그래프와 **차수 분포가 같은** 블록 내 무작위 그래프(대조군).
+
+    왜 필요한가: 셔플-링은 준정규 차수(모든 노드가 정확히 k개를 고른다)지만 랭킹은
+    **허브를 만든다** -- '전형적인' 사건은 많은 노드의 top-k에 들고 특이한 사건은
+    아무에게도 안 든다. 그래서 랭킹 그래프의 정확도가 달라져도 "랭킹 때문인가
+    차수 분포 때문인가"를 가를 수 없다. mitigate_graph에서 무작위 대조군 없이는
+    아무것도 증명되지 않았던 것과 같은 문제다.
+
+    구현은 블록 내 stub matching(configuration model): 각 노드의 차수만큼 stub을
+    만들고 블록 안에서 무작위로 짝지은 뒤, 자기루프·중복은 버린다(그만큼 차수가
+    근사가 되므로 실제 차수 분포를 결과에 함께 보고한다).
+    """
+    deg = np.zeros(n_nodes, dtype=np.int64)
+    if edges.shape[1]:
+        np.add.at(deg, edges[0], 1)
+    parts = []
+    for block_key, sub in df.groupby(block_cols, sort=False):
+        idx = sub.index.to_numpy()
+        d = deg[idx]
+        if d.sum() < 2:
+            continue
+        rng = np.random.default_rng(
+            (base_seed + zlib.crc32(("ctrl" + str(block_key)).encode())) % (2 ** 31))
+        stubs = np.repeat(idx, d)
+        rng.shuffle(stubs)
+        half = (len(stubs) // 2) * 2
+        parts.append(stubs[:half].reshape(2, -1, order="F"))
     directed = np.concatenate(parts, axis=1) if parts else np.empty((2, 0), dtype=np.int64)
     return _symmetrize(directed)
 
@@ -81,6 +128,10 @@ def graph_stats(edges, n_nodes):
     return {
         "n_edges": e_directed // 2,
         "avg_degree": deg.mean(),
+        # 셔플-링은 준정규(std가 작다)지만 랭킹은 허브를 만든다. 두 방식의 정확도
+        # 차이를 해석하려면 차수 분포가 얼마나 달라졌는지를 함께 봐야 한다.
+        "degree_std": float(deg.std()),
+        "degree_max": int(deg.max()),
         "isolated_nodes": int((deg == 0).sum()),
         "isolated_pct": (deg == 0).mean() * 100,
         "n_components": int(n_components),
@@ -92,8 +143,19 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--k", type=int, default=C.K_NEIGHBORS,
                          help="블록당 노드 차수 상한 (ablation용, 기본 config.K_NEIGHBORS)")
+    parser.add_argument("--rank", choices=similarity.SCHEMES, default=None,
+                         help="블록 내 셔플-링 대신 blind 특성 유사도 상위 k로 잇는다. "
+                              "인코딩 대결 결과 geo는 onehot, temporal은 ordinal이 낫다 "
+                              "(outputs/edge_relatedness_similarity.csv).")
+    parser.add_argument("--control", action="store_true",
+                         help="--rank과 함께: 차수 분포를 맞춘 무작위 그래프도 만든다 "
+                              "(랭킹 효과와 차수 효과를 가르는 대조군)")
+    parser.add_argument("--candidates", nargs="*",
+                         default=["geo", "temporal", "weapon"],
+                         help="구성할 엣지 후보")
     args = parser.parse_args()
     k = args.k
+    mode = f"rank_{args.rank}" if args.rank else None
 
     sample_df = pd.read_parquet(C.PROCESSED_DIR / "sample.parquet")
     feat_df = pd.read_parquet(C.PROCESSED_DIR / "features.parquet")
@@ -103,11 +165,21 @@ def main():
     n = len(sample_df)
     print(f"[load] sample {n:,}행, features {n:,}행 (정렬 확인 완료), k={k}")
 
-    candidates = {
+    all_candidates = {
         "geo": C.GEO_BLOCK_COLS,
         "temporal": C.TEMPORAL_BLOCK_COLS,
         "weapon": C.WEAPON_BLOCK_COLS,
     }
+    candidates = {c: all_candidates[c] for c in args.candidates}
+
+    Z = None
+    if args.rank:
+        # 랭킹은 반드시 blind 특성으로 한다. sighted 유사도의 oracle 이득은 blind의
+        # 6배지만(geo 0.1163 vs 0.0186) 그 대부분이 '같은 인종끼리 잇기'라, 이
+        # 프로젝트가 규명한 인종 누출 경로를 넓히는 대가로 사는 정확도다.
+        X, _ = load_xy(blind=True)
+        Z = similarity.build(X, args.rank)
+        print(f"[rank] {similarity.describe(X, args.rank)}  (blind 특성)")
 
     rows = []
     for name, block_cols in candidates.items():
@@ -115,23 +187,44 @@ def main():
         print(f"[block:{name}] {block_cols} {len(sizes)}개 블록, "
               f"최대 {sizes.max():,}행, 최소 {sizes.min()}행")
 
-        edges = build_block_graph(sample_df, block_cols, k, C.RANDOM_STATE)
-        stats = graph_stats(edges, n)
-        print(f"[edges:{name}] 무방향 {stats['n_edges']:,}개, 평균 차수 {stats['avg_degree']:.2f}")
-        print(f"[stats:{name}] 고립노드 {stats['isolated_nodes']:,}개({stats['isolated_pct']:.2f}%), "
-              f"연결성분 {stats['n_components']:,}개, 최대성분 {stats['largest_component_pct']:.1f}%")
+        arms = [(mode, build_block_graph(sample_df, block_cols, k, C.RANDOM_STATE, Z))]
+        if args.rank and args.control:
+            arms.append((f"{mode}_control",
+                         degree_matched_control(sample_df, block_cols, arms[0][1],
+                                                n, C.RANDOM_STATE)))
 
-        out = C.GRAPH_DIR / f"edges_{name}_k{k}.npy"
-        np.save(out, edges)
-        print(f"[save] {out}")
+        for arm_mode, edges in arms:
+            stats = graph_stats(edges, n)
+            label = f"{name}/{arm_mode or 'shuffle'}"
+            print(f"[edges:{label}] 무방향 {stats['n_edges']:,}개, "
+                  f"평균 차수 {stats['avg_degree']:.2f} (std {stats['degree_std']:.2f}, "
+                  f"최대 {stats['degree_max']:,})")
+            print(f"[stats:{label}] 고립노드 {stats['isolated_nodes']:,}개"
+                  f"({stats['isolated_pct']:.2f}%), 연결성분 {stats['n_components']:,}개, "
+                  f"최대성분 {stats['largest_component_pct']:.1f}%")
 
-        rows.append({"candidate": name, "k": k, **stats})
+            out = edges_path(name, k, arm_mode)
+            np.save(out, edges)
+            print(f"[save] {out}")
+            rows.append({"candidate": name, "k": k,
+                         "mode": arm_mode or "shuffle", **stats})
 
-    table = pd.DataFrame(rows).set_index("candidate")
+    table = pd.DataFrame(rows)
     out_csv = C.OUTPUT_DIR / "graph_edge_comparison.csv"
-    table.to_csv(out_csv, mode="a", header=not out_csv.exists(), encoding="utf-8-sig")
-    print(f"\n[save] {out_csv} (append)")
-    print(table)
+    # 열이 늘었으므로(mode/degree_*) append가 아니라 **읽고 합쳐 다시 쓴다**.
+    # 헤더보다 필드가 많은 행을 append하면 pandas가 그 파일을 아예 못 읽게 된다 --
+    # 옛 metrics.csv가 정확히 그렇게 망가졌다(CLAUDE.md의 ParserError 사례).
+    if out_csv.exists():
+        old = pd.read_csv(out_csv)
+        if "mode" not in old.columns:
+            old["mode"] = "shuffle"          # 이전 실행은 전부 셔플-링이었다
+        table = pd.concat([old, table], ignore_index=True)
+    cols = ["candidate", "mode", "k"] + [c for c in table.columns
+                                         if c not in ("candidate", "mode", "k")]
+    table = table[cols]
+    table.to_csv(out_csv, index=False, encoding="utf-8-sig")
+    print(f"\n[save] {out_csv}")
+    print(table.tail(len(rows)).to_string(index=False))
 
 
 if __name__ == "__main__":

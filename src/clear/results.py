@@ -52,7 +52,11 @@ ACCURACY = ["auc", "mcc", "f1", "sensitivity", "specificity",
 FAIRNESS = ["base_rate_gap", "selection_rate_gap", "selection_rate_amplification",
             "tpr_gap", "tpr_amplification", "fpr_gap", "fpr_amplification"]
 RUNINFO = ["best_epoch", "train_seconds", "n_params", "best_val_gap", "n_eval"]
-METRICS = ACCURACY + FAIRNESS + RUNINFO
+# '적용' 단계(미해결 사건 군집화)의 지표. long format이라 지표 추가는 열이 아니라
+# 행이 느는 일이므로 기존 결과는 손대지 않는다 -- 이 목록을 두는 이유는 summarize가
+# canonical 이름만 집계하도록 하기 위해서다.
+CLUSTER = ["n_significant_blocks", "silhouette", "ari_seed", "ami_perp", "n_clusters"]
+METRICS = ACCURACY + FAIRNESS + RUNINFO + CLUSTER
 
 # 옛 파일들이 쓰던 별칭 -> canonical. 마이그레이션과, 혹시 남은 호출부를 위해.
 ALIASES = {
@@ -171,9 +175,9 @@ def write(new_rows, path=None):
 
 
 # 학습 한 번이 남기는 노브/부가 측정치. clear.gnn.train_one 반환 dict의 키와 맞춘다.
-RUN_PARAMS = ["edge_type", "k_neighbors", "hidden_dim", "num_layers", "dropout",
-              "lr", "weight_decay", "aggr", "max_epochs", "patience", "val_size",
-              "fair_alpha", "fair_beta", "grad_clip"]
+RUN_PARAMS = ["edge_type", "edge_mode", "k_neighbors", "hidden_dim", "num_layers",
+              "dropout", "lr", "weight_decay", "aggr", "max_epochs", "patience",
+              "val_size", "fair_alpha", "fair_beta", "grad_clip"]
 
 
 def from_run(row, family, *, attribute=None, blind=None, group_set=None):

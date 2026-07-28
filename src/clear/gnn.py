@@ -81,8 +81,8 @@ def parse_seeds(s):
     return [int(x) for x in str(s).split(",") if x != ""]
 
 
-def build_data(X, edge_type, k, device):
-    edges = build_edge_index(edge_type, k)
+def build_data(X, edge_type, k, device, mode=None):
+    edges = build_edge_index(edge_type, k, mode)
     x = torch.tensor(X.values.astype(np.float32))
     edge_index = torch.from_numpy(edges).long()
     return Data(x=x, edge_index=edge_index).to(device)
@@ -139,7 +139,7 @@ def fairness_penalty(proba, codes):
 
 def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neighbors,
               hidden_dim, num_layers, dropout, lr, weight_decay, aggr,
-              max_epochs, patience, val_size, tag, device,
+              max_epochs, patience, val_size, tag, device, edge_mode=None,
               fair_alpha=0.0, fair_codes=None, fair_beta=0.0, grad_clip=0.0):
     torch.manual_seed(seed)
     model = GraphSAGE(data.x.shape[1], hidden_dim, num_layers, dropout, aggr).to(device)
@@ -223,7 +223,9 @@ def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neigh
     return {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "model": "graphsage", "tag": tag, "seed": seed,
-        "edge_type": edge_type, "k_neighbors": k_neighbors,
+        # edge_mode=None(셔플-링)이면 results의 from_run이 params에서 빼므로 기존
+        # 결과 행의 identity KEY가 그대로 유지된다(config.GNN_EDGE_MODE 주석 참고).
+        "edge_type": edge_type, "edge_mode": edge_mode, "k_neighbors": k_neighbors,
         "hidden_dim": hidden_dim, "num_layers": num_layers, "dropout": dropout,
         "lr": lr, "weight_decay": weight_decay, "aggr": aggr,
         "max_epochs": max_epochs, "patience": patience, "val_size": val_size,
@@ -256,7 +258,8 @@ def dump_test_predictions(rows, test_idx, y, path):
 
 
 def train_eval(edge_type, k_neighbors, hp, seeds, tag, X, y_t, train_t, val_t, test_t,
-               device, family=None, data=None, attribute=None, blind=None, **extra):
+               device, family=None, data=None, attribute=None, blind=None,
+               edge_mode=None, **extra):
     """한 config를 여러 seed로 학습. edge 그래프는 한 번만 로드해 재사용.
     seed별 결과를 outputs/results.csv에 기록(family를 주면)하고 행 리스트를 반환한다.
 
@@ -271,13 +274,14 @@ def train_eval(edge_type, k_neighbors, hp, seeds, tag, X, y_t, train_t, val_t, t
     루프를 각자 재구현했다 — "공용 함수가 정작 자기 호출부를 못 덮는" 상태였다.
     """
     if data is None:
-        data = build_data(X, edge_type, k_neighbors, device)
-        print(f"[graph:{edge_type}] 엣지 {data.edge_index.shape[1]:,}개(방향), k={k_neighbors}")
+        data = build_data(X, edge_type, k_neighbors, device, edge_mode)
+        print(f"[graph:{edge_type}/{edge_mode or 'shuffle'}] "
+              f"엣지 {data.edge_index.shape[1]:,}개(방향), k={k_neighbors}")
     rows, recorded = [], []
     for seed in seeds:
         row = train_one(edge_type, data, y_t, train_t, val_t, test_t,
                         seed=seed, k_neighbors=k_neighbors, tag=tag, device=device,
-                        **hp, **extra)
+                        edge_mode=edge_mode, **hp, **extra)
         if family is not None:
             recorded += results.from_run(row, family, attribute=attribute, blind=blind)
         rows.append(row)

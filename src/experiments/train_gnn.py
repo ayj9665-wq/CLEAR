@@ -45,6 +45,10 @@ def main():
                          default=C.GNN_DEFAULT_EDGE_TYPE)
     parser.add_argument("--k_neighbors", type=int, default=C.K_NEIGHBORS,
                          help="04_build_graph.py --k로 만든 그래프 중 어느 것을 쓸지 선택")
+    parser.add_argument("--edge_mode", default=C.GNN_EDGE_MODE,
+                         help="그래프 구성 방식. 기본(None)은 셔플-링. "
+                              "'rank_onehot'/'rank_ordinal'은 04_build_graph.py --rank로 "
+                              "먼저 만들어야 하며, 없으면 조용한 대체가 아니라 파일 없음 에러다.")
     parser.add_argument("--seeds", type=parse_seeds, default=C.GNN_SEEDS,
                          help="쉼표구분 torch seed 목록(예: 42,43,44). split은 고정.")
     parser.add_argument("--hidden_dim", type=int, default=C.GNN_HIDDEN_DIM)
@@ -88,9 +92,10 @@ def main():
     for edge_type in edge_types:
         rows = train_eval(edge_type, args.k_neighbors, hp, args.seeds, tag,
                           X, y_t, train_t, val_t, test_t, device,
-                          family="train", blind=args.blind)
+                          family="train", blind=args.blind, edge_mode=args.edge_mode)
         if args.dump_predictions:
-            pred_path = predictions.path_for("graphsage", f"{edge_type}{suffix}")
+            mode_sfx = f"_{args.edge_mode}" if args.edge_mode else ""
+            pred_path = predictions.path_for("graphsage", f"{edge_type}{mode_sfx}{suffix}")
             dump_test_predictions(rows, test_idx, y, pred_path)
             print(f"[save] {pred_path} (test 노드 {len(test_idx):,}개, seed 평균 proba)")
     print(f"[save] {results.results_path()} (family=train, {len(edge_types)}×{len(args.seeds)}회)")

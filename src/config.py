@@ -114,6 +114,15 @@ WEAPON_BLOCK_COLS = ["Weapon", "Victim Sex", "Victim Race"]
 # 이겨서 임시로 기본값 확정. temporal/weapon은 --edge_type으로 여전히 실행
 # 가능 — 데이터가 바뀌면(예: ablation으로 다른 후보가 역전) 재검토.
 GNN_DEFAULT_EDGE_TYPE = "geo"
+# 그래프 구성 방식. None = 04_build_graph.py의 기본(블록 내 셔플-링 무작위 페어링).
+# "rank_onehot"/"rank_ordinal" 등은 04를 --rank로 돌려 만든 유사도 랭킹 그래프.
+#
+# **기본값이 None이어야 하는 이유**(문자열 "shuffle"이 아니라): clear.results의
+# RUN_PARAMS에 edge_mode가 들어가는데 from_run이 None인 키를 params에서 빼므로,
+# 기존 셔플 그래프 결과의 params JSON이 한 글자도 안 바뀐다 -> 결과 identity KEY가
+# 유지되고 재실행이 '교체'로 남는다. 기본값을 문자열로 두면 옛 행과 params가 갈려
+# 재실행이 중복 행을 만든다(통합 직후 78행이 겹쳤던 그 사고).
+GNN_EDGE_MODE = None
 GNN_HIDDEN_DIM = 64
 GNN_NUM_LAYERS = 2
 GNN_DROPOUT = 0.3
