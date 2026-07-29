@@ -1,0 +1,25 @@
+﻿attribute,group_set,model_a,model_b,metric,quantity,diff,diff_lo,diff_hi,significant
+Victim Race,named_all,graphsage_geo_blind_mb,graphsage_geo_mb,selection_rate,gap,-0.02325357740166567,-0.03635371587648611,-0.010685028411931616,True
+Victim Race,named_all,graphsage_geo_blind_mb,graphsage_geo_mb,selection_rate,amplification,-0.17280838416130706,-0.26938106577554705,-0.07933659890341119,True
+Victim Race,named_all,graphsage_geo_blind_mb,graphsage_geo_mb,tpr,gap,-0.02224566836209907,-0.03498023261480471,0.0020808915412930647,False
+Victim Race,named_all,graphsage_geo_blind_mb,graphsage_geo_mb,tpr,amplification,-0.16531813311302734,-0.2685647231794418,0.015523333719582866,False
+Victim Race,named_all,graphsage_geo_blind_mb,graphsage_geo_mb,fpr,gap,-0.010515857300601505,-0.049917232278631866,0.028613251153091643,False
+Victim Race,named_all,graphsage_geo_blind_mb,graphsage_geo_mb,fpr,amplification,-0.0781483329123227,-0.3646680503482272,0.20765598174856895,False
+Victim Race,named_n>=5000,graphsage_geo_blind_mb,graphsage_geo_mb,selection_rate,gap,-0.033604947336807856,-0.036334890966344464,-0.030926299247217376,True
+Victim Race,named_n>=5000,graphsage_geo_blind_mb,graphsage_geo_mb,selection_rate,amplification,-0.4402852292633195,-0.47967726747153905,-0.3991252358287662,True
+Victim Race,named_n>=5000,graphsage_geo_blind_mb,graphsage_geo_mb,tpr,gap,-0.03582141765742464,-0.038929097281453294,-0.03281977696295089,True
+Victim Race,named_n>=5000,graphsage_geo_blind_mb,graphsage_geo_mb,tpr,amplification,-0.4693249755092306,-0.5175833379138891,-0.4207879733294594,True
+Victim Race,named_n>=5000,graphsage_geo_blind_mb,graphsage_geo_mb,fpr,gap,-0.024531897593781493,-0.02947431748459362,-0.019388124073965625,True
+Victim Race,named_n>=5000,graphsage_geo_blind_mb,graphsage_geo_mb,fpr,amplification,-0.32141196497314195,-0.39060653029693143,-0.25147588471420446,True
+Victim Sex,named_all,graphsage_geo_blind_mb,graphsage_geo_mb,selection_rate,gap,-0.09889287367109623,-0.10233711435324909,-0.09555132478692567,True
+Victim Sex,named_all,graphsage_geo_blind_mb,graphsage_geo_mb,selection_rate,amplification,-1.1978789149430729,-1.2751634864089245,-1.1211421945371909,True
+Victim Sex,named_all,graphsage_geo_blind_mb,graphsage_geo_mb,tpr,gap,-0.09898090213218591,-0.1028139084963543,-0.09514792806969466,True
+Victim Sex,named_all,graphsage_geo_blind_mb,graphsage_geo_mb,tpr,amplification,-1.1989451943779788,-1.2834637996364655,-1.1191951748382405,True
+Victim Sex,named_all,graphsage_geo_blind_mb,graphsage_geo_mb,fpr,gap,-0.09481998561909794,-0.10245489881158905,-0.08740308665127307,True
+Victim Sex,named_all,graphsage_geo_blind_mb,graphsage_geo_mb,fpr,amplification,-1.148544452920677,-1.257948636180691,-1.0498454594003355,True
+Victim Sex,named_n>=5000,graphsage_geo_blind_mb,graphsage_geo_mb,selection_rate,gap,-0.09889287367109623,-0.10233711435324909,-0.09555132478692567,True
+Victim Sex,named_n>=5000,graphsage_geo_blind_mb,graphsage_geo_mb,selection_rate,amplification,-1.1978789149430729,-1.2751634864089245,-1.1211421945371909,True
+Victim Sex,named_n>=5000,graphsage_geo_blind_mb,graphsage_geo_mb,tpr,gap,-0.09898090213218591,-0.1028139084963543,-0.09514792806969466,True
+Victim Sex,named_n>=5000,graphsage_geo_blind_mb,graphsage_geo_mb,tpr,amplification,-1.1989451943779788,-1.2834637996364655,-1.1191951748382405,True
+Victim Sex,named_n>=5000,graphsage_geo_blind_mb,graphsage_geo_mb,fpr,gap,-0.09481998561909794,-0.10245489881158905,-0.08740308665127307,True
+Victim Sex,named_n>=5000,graphsage_geo_blind_mb,graphsage_geo_mb,fpr,amplification,-1.148544452920677,-1.257948636180691,-1.0498454594003355,True
