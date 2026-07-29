@@ -34,6 +34,22 @@
 | 표본 추출 (`02_sample.py`) | `data/processed/sample.parquet` | **190,326** | 12 | California·Texas·Michigan 3개 주 |
 | 특성 공학 (`03_features.py`) | `data/processed/features.parquet` | 190,326 | 76 | X 73열 + `solved` + `sens__*` 2열 |
 
+**스코프 축 (2026-07-28 추가).** 위 표는 기본 스코프(`ca_tx_mi`)다. 전국 확장으로
+`CLEAR_SCOPE=national` 축이 생겼고, 같은 스크립트가 별도 디렉터리에 산출물을 낸다.
+
+| 단계 | 경로 | 행 | 열 | 비고 |
+|---|---|---|---|---|
+| 표본 추출 | `data/processed/national/sample.parquet` | **638,454** | 12 | 주 필터 없음, **51개 주** |
+| 특성 공학 | `data/processed/national/features.parquet` | 638,454 | 126 | X **123열** + `solved` + `sens__*` 2열 |
+
+X가 73 → 123열로 는 것은 `State` 더미가 3개에서 51개가 됐기 때문이다. `clean.parquet`은
+**스코프 밖에 있다** — `01_clean.py`에 주 필터가 없어 산출물이 이미 전국이고 두
+스코프가 공유한다.
+
+두 스코프의 산출물을 반드시 분리해야 하는 이유는 편의가 아니다. 예측 덤프의
+`row_index`는 `features.parquet`의 **행 위치**라, 표본이 바뀐 뒤 옛 덤프를 읽으면
+민감속성이 엉뚱한 행과 조인되면서도 **에러 없이 그럴듯한 표**가 나온다.
+
   → 정제 단계에서 **행은 한 건도 버리지 않았다.** 결측이 `NaN`이 아니라
   `"Unknown"` 문자열/`998` 코드로 인코딩돼 있어서, 삭제 대상이 아니라 하나의
   범주값으로 살려 두는 편이 정보 손실이 적다고 판단했기 때문이다(4절 참조).
