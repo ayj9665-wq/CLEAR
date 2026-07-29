@@ -208,7 +208,7 @@ def load_geometry(fips=None):
 
 
 def albers(lon, lat, lat1=29.5, lat2=45.5, lon0=-96.0, lat0=37.5):
-    """Albers 등적 원뿔 투영(CONUS 표준 파라미터). 단위구 기준 -- 지도 축척은 임의.
+    """Albers 등적 원뿔 투영(기본값은 CONUS 표준 파라미터). 단위구 기준 -- 축척은 임의.
 
     등적(equal-area)이라야 코로플레스가 정직하다. 등각 투영은 고위도 카운티의
     면적을 부풀려 '큰 카운티가 중요해 보이는' 착시를 만든다.
@@ -219,8 +219,68 @@ def albers(lon, lat, lat1=29.5, lat2=45.5, lon0=-96.0, lat0=37.5):
     Cc = np.cos(p1) ** 2 + 2 * n * np.sin(p1)
     rho = np.sqrt(np.maximum(Cc - 2 * n * np.sin(phi), 0)) / n
     rho0 = np.sqrt(max(Cc - 2 * n * np.sin(p0), 0)) / n
-    theta = n * (lam - l0)
+    # 경도차를 (-pi, pi]로 감는다. 안 감으면 날짜변경선을 넘는 도형이 지구를 한 바퀴
+    # 돌아 반대쪽으로 날아간다 -- 알류샨 열도(경도가 -180과 +180을 오간다)가 정확히
+    # 그 경우이고, 감기 전 알래스카의 y 범위가 0.36~2.33까지 벌어졌다. CONUS는
+    # 애초에 날짜변경선과 무관하므로 이 변경의 영향을 받지 않는다.
+    dlam = (lam - l0 + np.pi) % (2 * np.pi) - np.pi
+    theta = n * dlam
     return rho * np.sin(theta), rho0 - rho * np.cos(theta)
+
+
+# ---- Albers USA 합성(전국 지도) ---------------------------------------------
+#
+# CONUS 파라미터 하나로는 알래스카·하와이가 화면 밖으로 나간다. 표준 해법은
+# **부분마다 다른 Albers를 쓰고 결과를 이동·축소해 한 화면에 배치**하는 것이다
+# (d3.geoAlbersUsa와 같은 구성).
+#
+# 정직성에 대해 분명히 해둘 것: **합성 전체는 등적이 아니다.** 각 조각 안에서는
+# 등적이지만 알래스카는 0.35배로 줄여 놓았으므로, 알래스카 카운티의 화면 면적을
+# CONUS 카운티와 비교하면 안 된다. 지도에 이 배율을 표기한다(§6-9의 오독 방지와
+# 같은 성격 -- 색 이전에 좌표부터 오해를 부른다).
+#
+# 분기는 **점이 아니라 도형 단위**로 해야 한다. 점마다 판정하면 경계에 걸친
+# 다각형이 두 투영으로 찢어진다. 그래서 FIPS 앞 2자리(주 코드)로 나눈다.
+ALASKA_FIPS, HAWAII_FIPS = "02", "15"
+
+_USA_PARTS = {
+    # 조각별 (Albers 파라미터, 축척, 이동). 이동량은 CONUS를 투영해 본 실측
+    # 경계에 맞춰 잡는다(_place_parts 참고).
+    ALASKA_FIPS: dict(params=(55.0, 65.0, -154.0, 50.0), scale=0.35),
+    HAWAII_FIPS: dict(params=(8.0, 18.0, -157.0, 13.0), scale=1.0),
+    None:        dict(params=(29.5, 45.5, -96.0, 37.5), scale=1.0),
+}
+
+# 조각을 CONUS 아래-왼쪽에 놓기 위한 평행이동(단위구 좌표).
+#
+# 눈으로 고른 값이 아니라 **실측 범위에서 역산**했다(각 조각을 자기 투영으로 그린 뒤
+# 경계를 잰 값):
+#   CONUS x[-0.369, 0.353] y[-0.210, 0.246]
+#   AK    x[-0.339, 0.233] y[ 0.065, 0.372]   (0.35배 축소 후 x[-0.119,0.082] y[0.023,0.130])
+#   HI    x[-0.058, 0.036] y[ 0.104, 0.161]
+# **y는 북쪽으로 증가**하므로(아래 albers 주석) "CONUS 아래"는 y < -0.210이다. AK의
+# 위 끝을 y=-0.24, HI의 위 끝을 y=-0.25에 두고 x_min을 각각 -0.36, -0.13에 맞춘 값이다.
+#
+# **하와이는 CONUS와 같은 축척(1.0)이라 면적 비교가 성립한다. 줄인 것은 알래스카뿐**
+# (0.35배)이므로, 오독 방지 문구는 알래스카만 지목하면 된다.
+_USA_OFFSET = {ALASKA_FIPS: (-0.241, -0.370), HAWAII_FIPS: (-0.072, -0.411),
+               None: (0.0, 0.0)}
+
+
+def albers_usa(lon, lat, fips):
+    """Albers USA 합성. fips는 **도형 하나의** 5자리 코드(앞 2자리만 본다).
+
+    반환은 albers()와 같은 단위구 스케일이며 **y는 북쪽으로 증가**한다(위도가
+    높을수록 rho가 작아지고 y = rho0 - rho·cos θ가 커진다). 실측: Seattle y=+0.220
+    vs Miami y=-0.185. 따라서 matplotlib에 그릴 때 **y를 뒤집으면 안 된다** --
+    experiments/map_figures.py가 albers()를 그대로 쓰는 것과 같은 규약이다.
+    """
+    key = str(fips)[:2]
+    part = _USA_PARTS.get(key if key in _USA_PARTS else None)
+    lat1, lat2, lon0, lat0 = part["params"]
+    x, y = albers(lon, lat, lat1, lat2, lon0, lat0)
+    dx, dy = _USA_OFFSET.get(key if key in _USA_OFFSET else None)
+    return x * part["scale"] + dx, y * part["scale"] + dy
 
 
 # ---- 색: 발산형 (라이트 모드 전용) -------------------------------------------
