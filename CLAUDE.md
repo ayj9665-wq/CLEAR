@@ -76,7 +76,15 @@ python -m experiments.mitigate_loss --alphas 0 25 50 75 --seeds 42,43,44,45 # fi
 
 python -m experiments.detect_cold_blocks  # -> outputs/cold_blocks.csv (blocks with unexplained excess unsolved; family=cold_blocks)
 python -m experiments.detect_cold_blocks --blocks county hargrove --min_n 50
+python -m experiments.detect_cold_blocks --min_n 20 50 100   # re-runs the test at each floor
+                                    # (BH q depends on how many blocks were tested together,
+                                    #  so this is NOT the same as filtering one run by n)
 python -m experiments.detect_cold_blocks --model graphsage_geo_blind --calibrate none   # diagnostic only, see below
+
+python -m experiments.build_web_map       # -> outputs[/{scope}]/web/map_{scope}.html
+                                    # self-contained, zero external requests; needs the
+                                    # three min_n levels above for the sample-floor slider
+python -m experiments.build_web_map --simplify_km 1.5   # payload knob (1.0km=468KB paths, 2.0km=399KB)
 
 python -m experiments.map_figures         # -> outputs/map_fig{1,2}_*.png (county choropleth of the residuals + the race panel)
 python -m experiments.poster_figures      # -> outputs/poster_fig{1,2}_*.png (reads result CSVs only, no retraining)
@@ -848,6 +856,48 @@ baseline"**. Discrimination, investigative resourcing, urbanicity, and recording
 are **not separable** in this design (`Agency Type` only partly proxies urbanicity).
 The z-vs-race correlation must not be read causally, and that sentence has to travel with
 any map built on this table.
+
+**The national run is done, and it reproduces the mechanism at scale.** 638,454 rows /
+51 states / 123 feature columns; `geo` gives exactly the 3,042 blocks the design doc
+predicted and 25.0M directed edges. Race assortativity *rises* with scale (0.174 →
+0.2308), and blind amplification rises with it — **1.805 [1.715, 1.904]** against the
+three-state mini-batch 1.26, the lower bound clear of that CI's upper bound. This was
+pre-registered before the run. The alpha re-search picks **α=100** on the pre-registered
+gate (FPR amplification CI upper bound ≤ 0.5): α=25 and α=50 have point estimates under
+0.5 but upper bounds of 0.572 and 0.539, so they fail; α=100 gives 0.261 [0.157, 0.367]
+for −0.0156 MCC. Every `detect_cold_blocks` / map artifact at national scope runs on
+`graphsage_fairloss_a100_mb`. Two things did *not* carry over: the alpha curve does not
+invert in 0..100 (three states inverted above 50 — the mini-batch effective range shifted
+down, 47 optimizer steps per epoch against one), and **sex amplification no longer
+collapses under blinding** (1.25 [1.17, 1.33] nationally vs 0.88–0.96 on three states)
+even though geo's sex assortativity stays low at 0.0336 — graph homophily does not
+explain that residual, and it is recorded as an open observation, not explained away.
+
+National cold blocks (test set, α=100, δ=+0.8170): 853 county blocks at n≥20, 38 cold /
+52 warm. Top: Fulton/Atlanta (SMR 1.55, z 15.66), Baltimore city, St. Louis city,
+Orleans, Richmond, DC, Wayne, Cook — far stronger face validity than three states could
+show. `z ↔ black_share` strengthens to **+0.381** (+0.546 at n≥100), cold blocks
+averaging 0.680 Black share against warm 0.233; still not exclusively a race story
+(2 of 38 cold counties are under 0.30). The §5-4-1 caveat is unchanged and travels with
+the map: the model has no county feature, so z carries the whole county effect and
+discrimination / resourcing / urbanicity / recording practice are not separable.
+
+**`experiments/build_web_map.py` is the national deliverable** — one self-contained HTML,
+zero external requests, no chart library (a choropleth is fill on `<path>`; projection and
+simplification stay in Python). 3,090 counties / 50 states / 626 KB. Three details are
+load-bearing. The **sample-floor slider consumes three separate `detect_cold_blocks` runs**,
+because BH q-values depend on how many blocks were tested together — filtering one run by
+`n` would report wrong q's, and the effect is not even monotone (three states give 5 cold
+at n≥20 but 6 at n≥50). The **three-tier encoding is resolved to integer colour indices at
+build time**, so the browser never compares the flag strings that once read back from CSV
+as `NaN` and painted all 143 counties as signal. And **per-level payload carries only what
+changes** — `n`/`z`/`smr`/`black_share` are properties of a county, so shipping them once
+instead of three times took 729 KB (over budget) to 664 KB, with 1.5 km simplification
+closing to 626 KB. Verified without a browser by re-rendering the emitted paths and fills,
+`node --check`, and 13 data invariants; DOM behaviour is unverified. Note that several top
+cold counties are independent cities and are nearly invisible on a national choropleth —
+small in area, not weak in signal — so **hover and the table view are how this result is
+read**, and any static figure needs the ranked table beside it.
 
 **`experiments/map_figures.py` draws that table as a county choropleth** (`clear.counties`).
 `City` really is a county field here, so the choropleth — not a city dot map — is the
