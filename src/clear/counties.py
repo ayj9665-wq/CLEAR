@@ -283,6 +283,69 @@ def albers_usa(lon, lat, fips):
     return x * part["scale"] + dx, y * part["scale"] + dy
 
 
+# ---- 웹 지도용: 단순화 · SVG path 직렬화 --------------------------------------
+#
+# 코로플레스는 결국 <path>에 fill을 칠하는 것이므로 브라우저에는 좌표만 넘기면
+# 된다(확장설계서 §6-3). 어려운 쪽(투영·단순화)은 여기 파이썬에서 끝낸다.
+
+def simplify(ring, tol):
+    """Douglas-Peucker. ring: (N,2), tol: 투영 좌표 단위 허용오차.
+
+    **재귀가 아니라 스택**으로 돈다 -- 카운티 외곽선은 점이 수천 개라 재귀로 짜면
+    파이썬 기본 재귀한도에 걸린다.
+
+    주의: 다각형마다 **독립적으로** 단순화하므로 인접 카운티의 공유 경계가 서로
+    다르게 줄어 틈(sliver)이 생긴다. 위상을 보존하는 단순화는 훨씬 복잡하고, 이
+    지도에서는 얇은 흰 stroke로 경계를 그리므로 그 틈이 stroke 아래로 숨는다.
+    허용오차를 키울 때는 **렌더해서 확인**할 것(§6-3-1의 교훈).
+    """
+    n = len(ring)
+    if n < 3:
+        return ring
+    keep = np.zeros(n, dtype=bool)
+    keep[0] = keep[-1] = True
+    stack = [(0, n - 1)]
+    while stack:
+        i, j = stack.pop()
+        if j <= i + 1:
+            continue
+        seg = ring[j] - ring[i]
+        L = np.hypot(*seg)
+        pts = ring[i + 1:j] - ring[i]
+        # 선분 길이가 0이면(닫힌 고리의 시작=끝) 점까지의 거리로 대체한다.
+        d = (np.abs(pts[:, 0] * seg[1] - pts[:, 1] * seg[0]) / L if L > 0
+             else np.hypot(pts[:, 0], pts[:, 1]))
+        k = int(np.argmax(d))
+        if d[k] > tol:
+            k += i + 1
+            keep[k] = True
+            stack.append((i, k))
+            stack.append((k, j))
+    return ring[keep]
+
+
+def svg_path(rings, scale, ox, oy, tol=0.0, ndigits=1):
+    """링 목록 -> SVG path 문자열 하나(서브패스 여러 개, 각각 Z로 닫는다).
+
+    좌표는 (v*scale + offset)으로 viewBox에 맞춘 뒤 ndigits로 **양자화**한다.
+    단순화 다음으로 페이로드를 가장 크게 줄이는 것이 이 반올림이다 -- 좌표
+    문자열이 '123.456789'에서 '123.5'로 줄어든다.
+
+    y는 albers가 북쪽으로 증가하게 주는데 SVG는 아래로 증가하므로 **여기서 뒤집는다**
+    (호출부가 또 뒤집지 않도록 이 함수가 유일한 뒤집기 지점이다).
+    """
+    out = []
+    for ring in rings:
+        r = simplify(ring, tol) if tol > 0 else ring
+        if len(r) < 3:
+            continue
+        xs = np.round(r[:, 0] * scale + ox, ndigits)
+        ys = np.round(-r[:, 1] * scale + oy, ndigits)
+        pts = [f"{x:g},{y:g}" for x, y in zip(xs, ys)]
+        out.append("M" + "L".join(pts) + "Z")
+    return "".join(out)
+
+
 # ---- 색: 발산형 (라이트 모드 전용) -------------------------------------------
 #
 # 이 프로젝트의 지도는 **라이트 모드 하나에만** 의도적으로 고정한다(확장설계서 §6-6).
