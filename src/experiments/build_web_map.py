@@ -125,51 +125,64 @@ def build_paths(state_fips, tol):
 
 
 def color_tables(tab, fips_order):
-    """레이어 x min_n 별 (색 인덱스, 툴팁 값) 배열.
+    """정적 카운티 통계 1벌 + 수준별로 **실제로 달라지는 것만**.
 
-    색을 **파이썬에서 확정**해 인덱스로 넘긴다. 구간 경계를 JS에 다시 구현하면
+    `n`·`n_unsolved`·`expected`·`smr`·`z`·`black_share`는 카운티의 성질이라
+    min_n을 바꿔도 값이 같다. 달라지는 것은 **판정 대상인지**와 **q값/flag**뿐이다
+    (BH FDR이 동시에 검정한 블록 수에 의존하므로). 처음에는 수준마다 전부 실었더니
+    페이로드가 729KB로 예산 650KB를 넘었다 -- 같은 숫자를 세 번 보낸 탓이다.
+
+    색은 **파이썬에서 확정**해 인덱스로 넘긴다. 구간 경계를 JS에 다시 구현하면
     범례와 그림이 어긋날 수 있고(map_figures에서 실제로 searchsorted 경계와 라벨이
     한 칸 밀렸다), 페이로드도 색 문자열보다 작은 정수가 낫다.
     """
     blue, red = CT.arms(5)
     palette = [CT.NEUTRAL] + blue + red          # 0=중립 회색, 1..5=파랑, 6..10=빨강
-    levels = sorted(tab["min_n"].unique())
+    levels = sorted(int(m) for m in tab["min_n"].unique())
+    sig = tab["flag"] != ""
     # 발산 스케일은 모든 수준에서 **같은 vmax**를 써야 슬라이더를 움직여도 색의
     # 뜻이 안 바뀐다.
-    vmax = float(np.nanmax(np.abs(tab.loc[tab["flag"] != "", "z"]))) if (tab["flag"] != "").any() else 1.0
+    vmax = float(np.nanmax(np.abs(tab.loc[sig, "z"]))) if sig.any() else 1.0
     edges = np.linspace(0, vmax, 6)[1:]
 
-    out = {}
+    # 정적 통계: 가장 낮은 수준(=가장 넓은 집합)에서 한 벌만 뽑는다.
+    base = tab[tab["min_n"] == levels[0]].drop_duplicates("fips").set_index("fips")
+    pri_rate = (base["n_priority"] / base["n"])
+    pri_max = float(pri_rate.max() or 1.0)
+    pri_edges = np.linspace(0, pri_max, 6)[1:]
+    raw_edges = np.linspace(0, 1, 6)[1:]
+
+    stat, res_static, pri_c, raw_c = [], [], [], []
+    for f in fips_order:
+        if f not in base.index:
+            stat.append(None); res_static.append(-1); pri_c.append(-1); raw_c.append(-1)
+            continue
+        r = base.loc[f]
+        stat.append([r["State"], r["City"], int(r["n"]), int(r["n_unsolved"]),
+                     round(float(r["expected_unsolved"]), 1), round(float(r["smr"]), 3),
+                     round(float(r["z"]), 2), round(float(r["black_share"]), 3),
+                     int(r["n_priority"])])
+        i = min(4, int(np.searchsorted(edges, abs(r["z"]))))
+        res_static.append((6 + i) if r["z"] > 0 else (1 + i))
+        pri_c.append(1 + min(4, int(np.searchsorted(pri_edges, r["n_priority"] / r["n"]))))
+        raw_c.append(1 + min(4, int(np.searchsorted(raw_edges,
+                                                    1 - r["n_unsolved"] / r["n"]))))
+
+    # 수준별: 판정 여부(0=미판정 / 1=판정·비유의 / 2=판정·유의)와 q값만.
+    per = {}
     for m in levels:
-        sub = tab[tab["min_n"] == m].set_index("fips")
-        res, pri, raw, tips = [], [], [], []
-        pri_max = float((sub["n_priority"] / sub["n"]).max() or 1.0)
+        sub = tab[tab["min_n"] == m].drop_duplicates("fips").set_index("fips")
+        state, q = [], []
         for f in fips_order:
             if f not in sub.index:
-                res.append(-1); pri.append(-1); raw.append(-1); tips.append(None)
+                state.append(0); q.append(None)
                 continue
             r = sub.loc[f]
-            if isinstance(r, pd.DataFrame):      # 같은 FIPS 중복 방어
-                r = r.iloc[0]
-            # 레이어 1: 유의한 것만 발산색, 판정했으나 비유의면 중립 회색
-            if r["flag"] == "":
-                res.append(0)
-            else:
-                i = int(np.searchsorted(edges, abs(r["z"])))
-                i = min(i, 4)
-                res.append((6 + i) if r["z"] > 0 else (1 + i))
-            # 레이어 2·3은 기술 통계라 유의성 구분이 없다(판정 대상이면 색칠).
-            pri.append(1 + min(4, int(np.searchsorted(
-                np.linspace(0, pri_max, 6)[1:], r["n_priority"] / r["n"]))))
-            raw.append(1 + min(4, int(np.searchsorted(
-                np.linspace(0, 1, 6)[1:], 1 - r["n_unsolved"] / r["n"]))))
-            tips.append([r["State"], r["City"], int(r["n"]), int(r["n_unsolved"]),
-                         round(float(r["expected_unsolved"]), 1),
-                         round(float(r["smr"]), 3), round(float(r["z"]), 2),
-                         round(float(r["q_value"]), 4), r["flag"],
-                         round(float(r["black_share"]), 3), int(r["n_priority"])])
-        out[int(m)] = {"res": res, "pri": pri, "raw": raw, "tip": tips}
-    return palette, out, levels, vmax, edges
+            state.append(2 if r["flag"] != "" else 1)
+            q.append(round(float(r["q_value"]), 4))
+        per[m] = {"s": state, "q": q}
+    static = {"stat": stat, "res": res_static, "pri": pri_c, "raw": raw_c}
+    return palette, static, per, levels, vmax, edges
 
 
 HTML = """<title>{title}</title>
@@ -257,20 +270,26 @@ th{{cursor:pointer;color:var(--ink2);font-weight:600;position:sticky;top:0;
 <p class="foot">{foot}</p>
 </div>
 <script>
-const D={data}, P={palette}, PATHS={paths}, LV={levels}, FI={fips};
+// S = 카운티 정적 통계(수준과 무관), PL = 수준별로 달라지는 것만(판정상태·q).
+const S={static}, PL={per}, P={palette}, PATHS={paths}, LV={levels}, FI={fips};
 const g=document.getElementById('g'), tip=document.getElementById('tip');
 let layer='res', li=0;
 const nodes=FI.map(f=>{{
   const p=document.createElementNS('http://www.w3.org/2000/svg','path');
   p.setAttribute('d',PATHS[f]); g.appendChild(p); return p;
 }});
+// 이 수준에서 이 카운티가 어떤 상태인가: 0 미판정 / 1 판정·비유의 / 2 판정·유의
+const st=i=>PL[LV[li]].s[i];
 function paint(){{
-  const d=D[LV[li]];
   nodes.forEach((p,i)=>{{
-    const c=d[layer][i];
+    const s=st(i);
+    let c;
+    if(s===0) c=-1;                        // 미판정 -> 빗금
+    else if(layer==='res') c = s===2 ? S.res[i] : 0;   // 유의한 것만 발산색
+    else c = S[layer][i];                  // 기술 레이어는 판정 대상이면 색칠
     p.setAttribute('fill', c<0 ? 'url(#na)' : P[c]);
     // 색 단독으로 의미가 실리지 않도록 유의 카운티에 테두리를 함께 건다.
-    p.classList.toggle('sig', layer==='res' && d.tip[i] && d.tip[i][8]!=='');
+    p.classList.toggle('sig', layer==='res' && s===2);
   }});
   document.getElementById('mnv').textContent=LV[li];
   legend(); table();
@@ -292,20 +311,22 @@ function legend(){{
   L.innerHTML=h;
 }}
 function table(){{
-  const d=D[LV[li]], b=document.querySelector('#t tbody');
-  const rows=d.tip.map((t,i)=>t).filter(Boolean)
-    .sort((a,c)=>c[6]-a[6]);
-  b.innerHTML=rows.map(t=>`<tr><td>${{t[0]}}</td><td>${{t[1]}}</td><td>${{t[2]}}</td>
+  const b=document.querySelector('#t tbody'), q=PL[LV[li]].q;
+  const rows=FI.map((f,i)=>st(i)?[S.stat[i], q[i]]:null).filter(Boolean)
+    .sort((a,c)=>c[0][6]-a[0][6]);
+  b.innerHTML=rows.map(([t,qq])=>`<tr><td>${{t[0]}}</td><td>${{t[1]}}</td><td>${{t[2]}}</td>
     <td>${{t[3]}}</td><td>${{t[4]}}</td><td>${{t[5]}}</td><td>${{t[6]}}</td>
-    <td>${{t[7]}}</td><td>${{t[9]}}</td></tr>`).join('');
+    <td>${{qq}}</td><td>${{t[7]}}</td></tr>`).join('');
 }}
 g.addEventListener('mousemove',e=>{{
-  const i=nodes.indexOf(e.target); const t=i<0?null:D[LV[li]].tip[i];
-  if(!t){{ tip.style.opacity=0; return; }}
-  const verdict=t[8]===''?'유의하지 않음':(t[8]==='cold'?'기대보다 많음(cold)':'기대보다 적음(warm)');
+  const i=nodes.indexOf(e.target); const s=i<0?0:st(i);
+  if(!s){{ tip.style.opacity=0; return; }}
+  const t=S.stat[i], qq=PL[LV[li]].q[i];
+  const verdict = s===1 ? '유의하지 않음'
+                : (t[6]>0 ? '기대보다 많음(cold)' : '기대보다 적음(warm)');
   tip.innerHTML=`<b>${{t[1]}}, ${{t[0]}}</b><br>사건 ${{t[2]}}건 · 미해결 ${{t[3]}}건`
-    +`<br>기대 ${{t[4]}} · SMR ${{t[5]}}<br>z ${{t[6]}} · q ${{t[7]}}`
-    +`<br>${{verdict}}<br>흑인 피해자 비중 ${{t[9]}}`;
+    +`<br>기대 ${{t[4]}} · SMR ${{t[5]}}<br>z ${{t[6]}} · q ${{qq}}`
+    +`<br>${{verdict}}<br>흑인 피해자 비중 ${{t[7]}}`;
   tip.style.opacity=1;
   tip.style.left=Math.min(e.clientX+14, innerWidth-300)+'px';
   tip.style.top=(e.clientY+14)+'px';
@@ -351,9 +372,9 @@ def main():
     print(f"[geo] 주 {len(state_fips)}개 / 카운티 {len(fips_order):,}개, "
           f"단순화 {args.simplify_km}km, viewBox {VIEW_W:.0f}x{height:.0f}")
 
-    palette, data, levels, vmax, edges = color_tables(tab, fips_order)
-    assessed = {m: sum(1 for t in data[m]["tip"] if t) for m in levels}
-    sig = {m: sum(1 for t in data[m]["tip"] if t and t[8]) for m in levels}
+    palette, static, per, levels, vmax, edges = color_tables(tab, fips_order)
+    assessed = {m: sum(1 for s in per[m]["s"] if s) for m in levels}
+    sig = {m: sum(1 for s in per[m]["s"] if s == 2) for m in levels}
     print(f"[level] 판정 {assessed} / 유의 {sig}  (|z| 스케일 상한 {vmax:.2f})")
 
     scope_label = "전국" if C.SCOPE != C.DEFAULT_SCOPE else "California·Texas·Michigan"
@@ -371,7 +392,8 @@ def main():
               "1980–2014. 기대값은 공정성 완화(손실 벌점)를 거친 GraphSAGE 모델의 "
               "test 집합 예측이며, 전역 로짓 보정 후 간접 표준화(SMR)로 계산했다. "
               "재현 방법은 저장소의 CLAUDE.md 참고."),
-        data=json.dumps(data, ensure_ascii=False, separators=(",", ":")),
+        static=json.dumps(static, ensure_ascii=False, separators=(",", ":")),
+        per=json.dumps(per, separators=(",", ":")),
         palette=json.dumps(palette), paths=json.dumps(paths, separators=(",", ":")),
         levels=json.dumps([int(m) for m in levels]),
         fips=json.dumps(fips_order, separators=(",", ":")),
@@ -384,7 +406,7 @@ def main():
     kb = p.stat().st_size / 1024
     print(f"[save] {p}  ({kb:.0f} KB, 외부 요청 0)")
     if kb > 650:
-        print(f"  [경고] 페이로드 예산 650KB 초과 — --simplify_km을 키울 것")
+        print("  [경고] 페이로드 예산 650KB 초과 - --simplify_km을 키울 것")
 
 
 if __name__ == "__main__":
