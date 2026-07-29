@@ -354,7 +354,11 @@ def main():
     ap.add_argument("--simplify_km", type=float, default=SIMPLIFY_KM,
                     help="지오메트리 단순화 허용오차(km). 0이면 단순화 안 함. "
                          "실측 페이로드: 0km 1.12MB / 1km 468KB / 2km 399KB")
-    ap.add_argument("--out", default="map.html")
+    # 파일명에 스코프를 넣는다. 디렉터리 격리(outputs/{scope}/web/)만으로는 두 파일이
+    # 똑같이 'map.html'이라, 파일 탐색기나 브라우저 탭에서 어느 쪽을 연 것인지
+    # 알 수 없다 -- 실제로 3개 주 지도를 열고 "주가 3개뿐"이라고 읽는 일이 생겼다.
+    ap.add_argument("--out", default=None,
+                    help="출력 파일명(기본: map_{scope}.html)")
     args = ap.parse_args()
 
     tab = load_blocks(args.block_key)
@@ -377,9 +381,11 @@ def main():
     sig = {m: sum(1 for s in per[m]["s"] if s == 2) for m in levels}
     print(f"[level] 판정 {assessed} / 유의 {sig}  (|z| 스케일 상한 {vmax:.2f})")
 
-    scope_label = "전국" if C.SCOPE != C.DEFAULT_SCOPE else "California·Texas·Michigan"
+    n_states = tab["fips"].str[:2].nunique()
+    scope_label = (f"전국 {n_states}개 주" if C.SCOPE != C.DEFAULT_SCOPE
+                   else "California · Texas · Michigan 3개 주")
     html = HTML.format(
-        title=f"설명되지 않는 미해결 집중 — 카운티별 표준화 잔차 ({scope_label})",
+        title=f"[{scope_label}] 설명되지 않는 미해결 집중 — 카운티별 표준화 잔차",
         subtitle=("각 카운티에서 관측된 미해결 건수를, 사건 구성과 주(州)를 통제한 "
                   "모델의 기대값과 비교한 값이다. 색이 칠해진 곳은 FDR 5%에서 "
                   "유의한 카운티뿐이다."),
@@ -401,7 +407,7 @@ def main():
 
     out = C.scoped_output("web")
     out.mkdir(parents=True, exist_ok=True)
-    p = out / args.out
+    p = out / (args.out or f"map_{C.SCOPE}.html")
     p.write_text(html, encoding="utf-8")
     kb = p.stat().st_size / 1024
     print(f"[save] {p}  ({kb:.0f} KB, 외부 요청 0)")
