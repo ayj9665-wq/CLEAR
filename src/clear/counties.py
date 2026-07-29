@@ -35,6 +35,7 @@ County가 충돌한다. 우리 데이터가 'Baltimore city'로 적고 있으므
 조인 실패는 조용히 넘기지 않고 목록으로 돌려준다(match_report).
 """
 import json
+import unicodedata
 import urllib.request
 
 import numpy as np
@@ -65,15 +66,42 @@ STATE_ABBREV = {
 }
 
 # 떼어낼 접미사. ' city'는 **의도적으로 없다**(독립시 구분이 사라진다).
-_SUFFIXES = (" county", " parish", " borough", " census area", " municipality",
-             " city and borough", " municipio")
+#
+# **긴 것부터** 봐야 한다. 원래는 선언 순서대로 첫 일치에서 멈췄는데, ' borough'가
+# ' city and borough'보다 앞에 있어서 'Juneau City and Borough'가 'juneau city'로
+# 잘렸다(알래스카 전역이 이렇게 미매칭됐다). 정렬로 강제한다.
+_SUFFIXES = tuple(sorted(
+    (" county", " parish", " borough", " census area", " municipality",
+     " city and borough", " municipio"),
+    key=len, reverse=True))
+
+# 데이터의 주 이름 오기. 'Rhodes Island'는 전국 표본에서 로드아일랜드 전체를
+# 미매칭으로 만든다(1,203건).
+STATE_ALIASES = {"Rhodes Island": "Rhode Island"}
 
 # 데이터의 옛 이름 -> 현재 Census 이름. 1980-2014 기록이라 개명이 섞여 있다.
+#
+# **키는 normalize()를 통과한 형태여야 한다.** 알래스카 항목이 원래 공백 표기라
+# (normalize는 하이픈을 보존한다) 한 번도 일치하지 않는 죽은 별칭이었다 -- 3개 주
+# 표본에는 알래스카가 없어서 드러나지 않았다.
 ALIASES = {
     ("Florida", "dade"): "miami-dade",
-    ("Alaska", "prince of wales outer ketchikan"): "prince of wales-hyder",
     ("South Dakota", "shannon"): "oglala lakota",
+    # 알래스카 census area 개편(2008~2015). 데이터는 개편 전 이름이라 분할 후
+    # 인구가 많은 쪽으로 보낸다 -- 정확한 복원이 불가능하므로 근사임을 명시한다.
+    ("Alaska", "prince of wales-outer ketchikan"): "prince of wales-hyder",
+    ("Alaska", "wrangell-petersburg"): "wrangell",
+    ("Alaska", "skagway-hoonah-angoon"): "hoonah-angoon",
+    # 네바다 카슨시티는 데이터가 'Carson City city'로 중복 표기한다.
+    ("Nevada", "carson city city"): "carson city",
+    # 2001년 독립시 지위를 반납하고 Alleghany 카운티로 편입.
+    ("Virginia", "clifton forge"): "alleghany",
 }
+
+# 'Repressed'는 카운티명이 아니라 **비식별 처리 표시**다(MAP이 소표본 관할을 가린
+# 것). 조인 실패가 아니라 애초에 지도에 올릴 수 없는 행이므로, 미매칭 목록에서
+# 빼서 진짜 조인 문제와 섞이지 않게 한다.
+NON_COUNTY = {"repressed"}
 
 
 def _cache(url, name):
@@ -86,8 +114,14 @@ def _cache(url, name):
 
 
 def normalize(name):
-    """카운티명 정규화: 소문자, 구두점 제거, 접미사 제거, 공백 압축."""
-    s = str(name).strip().lower().replace(".", "").replace("'", "")
+    """카운티명 정규화: 발음부호 제거, 소문자, 구두점 제거, 접미사 제거, 공백 압축.
+
+    발음부호를 접는 이유: Census는 'Doña Ana County'로 쓰고 우리 데이터는
+    'Dona Ana'로 쓴다. NFKD로 분해한 뒤 결합문자를 버리면 둘 다 'dona ana'가 된다.
+    """
+    s = unicodedata.normalize("NFKD", str(name).strip())
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.lower().replace(".", "").replace("'", "")
     for suf in _SUFFIXES:
         if s.endswith(suf):
             s = s[: -len(suf)]
@@ -114,16 +148,38 @@ def join_fips(df, state_col="State", city_col="City"):
     """
     ref = fips_table()
     out = df.copy()
-    out["_state"] = out[state_col].astype(str)
+    out["_state"] = out[state_col].astype(str).map(lambda s: STATE_ALIASES.get(s, s))
     out["_norm"] = out[city_col].map(normalize)
     key = list(zip(out["_state"], out["_norm"]))
     out["_norm"] = [ALIASES.get(k, k[1]) for k in key]
 
     m = ref.drop_duplicates(["state", "county_norm"]).set_index(
         ["state", "county_norm"])["fips"]
-    out["fips"] = pd.MultiIndex.from_arrays(
-        [out["_state"], out["_norm"]]).map(m)
-    missing = out[out["fips"].isna()][[state_col, city_col]].drop_duplicates()
+
+    def _lookup(names):
+        return pd.MultiIndex.from_arrays([out["_state"], names]).map(m)
+
+    out["fips"] = _lookup(out["_norm"])
+
+    # 폴백 두 벌. **둘 다 1차 조회가 실패한 행에만** 적용한다 -- 먼저 시도하면
+    # 애매한 이름의 판정을 바꿔버린다. 예: 버지니아 'Richmond'는 'Richmond County'와
+    # 'Richmond city'가 **둘 다 존재**하는데, 1차에서 County로 붙는 현행 동작을
+    # 유지해야 과거 결과가 재현된다.
+    for fallback in (
+        # 붙여쓰기: Census 'DeKalb'/'LaPorte'/'DeSoto' vs 데이터 'De Kalb'/'La Porte'
+        lambda s: s.str.replace(" ", "", regex=False),
+        # 독립시: Census 'Norfolk city' vs 데이터 'Norfolk'. 버지니아 38개 독립시가
+        # 전부 여기 걸린다(원래 카운티가 폐지돼 동명 카운티 자체가 없다).
+        lambda s: s + " city",
+    ):
+        miss = out["fips"].isna()
+        if not miss.any():
+            break
+        out.loc[miss, "fips"] = _lookup(fallback(out["_norm"]))[miss]
+
+    # 비식별 표시는 '조인 못 한 카운티'가 아니라 '카운티가 아닌 값'이다.
+    missing = out[out["fips"].isna() & ~out["_norm"].isin(NON_COUNTY)]
+    missing = missing[[state_col, city_col]].drop_duplicates()
     return out.drop(columns=["_state", "_norm"]), missing
 
 
