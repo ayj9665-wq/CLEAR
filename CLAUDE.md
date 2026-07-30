@@ -91,6 +91,17 @@ python -m experiments.crossfit_predictions --minibatch   # 5-fold out-of-fold p�
                                     # ~76 min at national scope; alpha/blind/minibatch fixed to the a100 gate value
 python -m experiments.crossfit_compare    # -> outputs/national/crossfit_compare.csv (the §2-1 judgment)
 
+python -m experiments.audit_resources     # -> outputs[/{scope}]/resource_audit.csv
+                                    # joins LEOKA agency-year officer counts onto the county
+                                    # residual; needs dataset/geo/LEOKA_parquet_1960_2024_year/
+python -m experiments.audit_resources --src cold_blocks.csv --min_n 20   # test-split table instead
+
+python -m experiments.audit_priority      # -> outputs[/{scope}]/priority_audit{.csv,_lift.png}
+                                    # D3 priority-list fairness audit; defaults to the
+                                    # a0-vs-a100 contrast on the shared test split
+python -m experiments.audit_priority --models graphsage_fairloss_a100_mb_cv5 --qs 0.001 0.005 0.01
+python -m experiments.audit_priority --attrs "Victim Race" --min_n 2000 --no_figure
+
 python -m experiments.build_web_map       # -> outputs[/{scope}]/web/map_{scope}.html
                                     # self-contained, zero external requests; needs the
                                     # three min_n levels above for the sample-floor slider
@@ -977,6 +988,87 @@ overall, so re-deriving it naively presses 3 groups instead of 2 and silently ma
 different intervention. The verification gate also had to change — p̂ is deliberately
 uncalibrated (`pos_weight`), so out-of-fold clearance is checked against the test-split
 model's own 0.5328, never against the actual 0.7020.
+
+**`experiments/audit_resources.py` measures one of `detect_cold_blocks`'s four confounded
+channels from outside the model.** LEOKA agency-year sworn-officer counts (Kaplan's concatenated
+files, openICPSR 102180) join onto the raw `Agency Code` directly — **(ORI, year) exact join is
+100.0%** (638,452/638,454), every year 1980–2014 at 100%. `Agency Code` is dropped by
+`01_clean.py`, so this reads the raw CSV; that is safe because the result is only ever used at
+`(State, City)` county granularity, never per row. LEAIC (ICPSR 35158) is **not** used: no
+ORI→county mapping is needed (`City` already is the county), and its county column has a real
+error — `PAPEP00` (Philadelphia PD) is assigned Indiana County (42063), which would silently
+move 12,848 homicides to a rural county.
+
+**Normalize per homicide, not per capita.** Per-capita is wrong twice: within a county the
+municipal/sheriff/state jurisdictional populations overlap so the denominator double-counts
+(officers don't — each is employed by exactly one agency), and more importantly cold counties
+have *more* officers per capita (2.20 vs warm 1.64) while carrying 1.75× the homicide load, so
+only the per-homicide figure reveals that their capacity per case is 26% *lower*. The sign flips
+if you skip this.
+
+**The headline is the attenuation of the `black_share` coefficient, not R².** The question is
+not "what explains z" but "is the race association a resourcing story". Measured attenuation is
+−0.8% [−2.3%, +0.5%] at n≥20 (CI covers zero), +2.6% at n≥50, +7.7% [+3.9%, +12.7%] at n≥100 —
+the same size-dependence the cross-fitting comparison found. **Read these as a lower bound, not
+a ceiling**: the regressor is compressed (below), so the control under-corrects and the race
+coefficient stays higher than it should, making measured attenuation smaller than the true one.
+What this design licenses is "resources account for *at least* this much"; **the upper bound is
+not obtainable here** — that needs exogenous variation (an instrument or a quasi-experiment).
+That it is *not* a flat null still carries information: the proxy demonstrably works at n≥100
+(partial R² +0.018), so "nothing showed up because the measure is dead" is weakened, which is
+evidence *against* the strong version ("resourcing explains most of the race association") —
+evidence, not proof.
+
+**Resources are deliberately kept out of the model.** Putting them in `X` would bake "few
+officers per homicide here, so expect it unsolved" into `E_b`, and Detroit's anomaly would
+vanish because the model pre-approved it as normal — the same laundering argument
+`detect_cold_blocks` already makes for race. Staffing is worse than a neutral covariate here
+because it is **endogenous**: police are assigned in response to homicide volume, so the thing
+being controlled is not an input but the county severity z exists to measure. Hence a county-level
+post-hoc regression only; every existing map, `cold_blocks*.csv`, and report citation stays valid.
+Two limits travel with the result. The proxy is total sworn officers, **not** detectives (LEOKA
+has no such column — `total_detective_*` is an assault-circumstance breakdown, 808 nationally in
+2010 against 759,323 officers). And endogeneity biases the attenuation *downward*, which cuts
+**against** the finding rather than for it: staffing tracks caseload almost exactly
+(`corr(log officers, log homicides) = +0.883`, elasticity 1.219), so the regressor
+`log(officers/homicide)` carries only **49% of the spread** of officers itself (SD 0.865 vs
+1.747) and a variable with no variation cannot explain anything even when the true effect is
+real; reverse causation pushes the same way, since "more resources → better clearance" (negative)
+is partly cancelled by "unsolved cases accumulate → more officers assigned" (positive). The true
+resource share could therefore exceed 8%. So the claim is "**the staffing level we measured**
+does not explain it", never "resourcing is not the cause".
+
+**`experiments/audit_priority.py` audits the priority list the project deliberately does not
+ship.** The extension design split "cluster the unsolved cases" into D1 typology / D2 block
+anomaly / D3 case-level priority, and its ethics gate said to draw D3 only from a mitigated
+model — carrying an untested assumption that **mitigating the model mitigates anything derived
+from it**. One quantity tests it: `lift_g(τ) = P(p̂ ≥ τ | y=0, g) / P(p̂ ≥ τ | y=0)` over
+unsolved cases only. At `τ=0.5` that *is* the group FPR ratio — where the loss penalty presses
+and where `fpr_gap` lives; at `τ = ` the top-q quantile it is the list's own composition. Same
+curve, two points, so "the model is fair but the list is not" becomes checkable. No calibration
+needed (§`detect_cold_blocks`'s δ): only ranks are used and τ is a quantile, so the whole thing
+is invariant to the monotone shift.
+
+**The answer splits by attribute, and the axis is whether the penalty targeted it.**
+`mitigate_loss --attr` defaults to `Victim Race`, so `a100` pressed race only. Race: the
+operating point goes 1.21 → 1.03 and **the tail follows, 1.54 → 1.07 [0.95, 1.21]** — CI covers
+1, so the mitigated list is proportional. Sex: the operating point improves slightly
+(1.26 → 1.17) but **the tail gets worse, 1.85 → 2.01 [1.69, 2.32]**. So the gate's assumption
+holds only for the penalized attribute; single-attribute mitigation does not generalize to the
+derived artifact along other attributes. Note this table is **evidence to report alongside, not
+a verdict** — treating the unsolved population's composition as the list's fair target is a
+value choice of the same kind as demographic parity, and the opposite reading is coherent
+(female-victim homicides usually get solved, so an unsolved one really is unusual and a high p̂
+is the correct signal).
+
+The case-level list itself is computed and **not written to disk**, for three reasons that
+generalize: there is no verification path (no re-investigation outcome column, so D3 is a
+ranking with nothing to test against — the same wall as "same offender" being unverifiable);
+the model's lack of a county feature is *deliberate* in `detect_cold_blocks` but becomes
+contamination here, since "solvable case" and "case in a low-clearance county" stop being
+separable without aggregation; and it violates the unit rule this repo already derived for
+edges — at MCC 0.30 an individual-case output is noise-dominated, and the unit has to be the
+block. Only the audit statistics ship.
 
 **`experiments/build_web_map.py` is the national deliverable** — one self-contained HTML,
 zero external requests, no chart library (a choropleth is fill on `<path>`; projection and
