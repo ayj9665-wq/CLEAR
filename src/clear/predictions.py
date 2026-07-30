@@ -14,11 +14,17 @@ row_index를 남기는 이유는 서로 다른 모델의 덤프가 같은 test �
 동일성 검증(assert_same_test_set)이 가능해야 하기 때문이다 — 그게 깨지면
 모델 간 격차 비교가 무의미해진다.
 """
+import re
+
 import pandas as pd
 import numpy as np
 
 import config as C
 from clear.data import load_sensitive
+
+# 크로스피팅 덤프의 라벨 규약(experiments/crossfit_predictions.py). discover()가
+# 자동 수집에서 제외하는 데 쓴다 -- 아래 참고.
+_CROSSFIT_RE = re.compile(r"_cv\d+$")
 
 # 덤프는 outputs/predictions/{model}[_{edge}].csv에 모아 둔다.
 #
@@ -93,8 +99,14 @@ def discover(models=None):
         for p in sorted(C.OUTPUT_DIR.glob("predictions_*.csv")):
             found.setdefault(p.stem.replace("predictions_", ""), p)
     if models:
-        found = {m: found[m] for m in models if m in found}
-    return found
+        return {m: found[m] for m in models if m in found}
+    # 크로스피팅 덤프(`..._cv5`)는 **자동 수집에서만** 뺀다. 이건 test 분할이 아니라
+    # 전체 표본의 out-of-fold 예측이라 row_index가 다른 덤프와 애초에 다르고,
+    # 인자 없는 diagnose_fairness가 주워 가면 assert_same_test_set이 (정당하게)
+    # 터져서 진단 자체가 안 돈다. 모델 간 격차 비교는 같은 test 집합 위에서만
+    # 의미가 있으므로 여기서 빠지는 것이 맞다 -- 다만 --models로 이름을 대면
+    # 그대로 읽힌다(단독 진단은 유효하다).
+    return {k: v for k, v in found.items() if not _CROSSFIT_RE.search(k)}
 
 
 def _feature_rows():

@@ -220,6 +220,12 @@ def main():
                          "다른 결과다. 웹 지도의 최소표본 슬라이더가 이 행들을 쓴다.")
     ap.add_argument("--n_boot", type=int, default=10000)
     ap.add_argument("--calibrate", choices=["shift", "none"], default="shift")
+    ap.add_argument("--out", default="cold_blocks.csv",
+                    help="블록 표 파일명(스코프 디렉터리 안). 크로스피팅 덤프처럼 "
+                         "**다른 분할**에서 나온 결과는 여기를 바꿔 파일을 분리한다 "
+                         "-- 기본 파일은 get_split의 test 기준이고 지도·보고서 60곳이 "
+                         "그 표를 인용한다. 두 분할을 한 파일에 섞으면 어느 행이 어느 "
+                         "분할인지 알 수 없게 된다.")
     ap.add_argument("--priority_q", type=float, default=0.10,
                     help="미해결 사건 중 p_hat 상위 이 비율을 '재수사 우선순위'로 센다")
     args = ap.parse_args()
@@ -290,7 +296,7 @@ def main():
                    "z_black_share_corr": round(corr, 3)}))
 
     if all_rows:
-        out = C.scoped_output("cold_blocks.csv")
+        out = C.scoped_output(args.out)
         pd.concat(all_rows, ignore_index=True).to_csv(
             out, index=False, encoding="utf-8-sig")
         print(f"\n[save] {out}")
