@@ -4,6 +4,9 @@
 - 파이프라인 위치: [experiments/train_baseline.py](../src/experiments/train_baseline.py) (`model=xgboost`)
 - 벤치마크/캐비엇 공통 문서: [모델벤치마크_선행연구비교.md](모델벤치마크_선행연구비교.md)
 
+
+> **스코프 주의 (2026-07-28)**: 이 보고서는 3개 주(CA+TX+MI) 표본 전용이다. 전국 확장에서는 평면 baseline을 다시 만들지 않았으므로(`train_baseline.py`가 커밋 `96d1dd1`에서 제거됨) **이 모델의 전국 수치는 존재하지 않는다.** 전국 값이 있는 것은 GraphSAGE뿐이다.
+
 ## 1. 역할 — "GNN이 넘어야 할 기준선"
 
 XGBoost는 **그래프를 무시하고 노드 특성만으로** 학습하는 flat(비그래프) 모델이다.

@@ -109,7 +109,7 @@ def load_perpetrator():
         raw = raw[raw["State"].isin(C.SAMPLE_STATES)]
     raw = raw.reset_index(drop=True)
 
-    sample = pd.read_parquet(C.PROCESSED_DIR / "sample.parquet")
+    sample = pd.read_parquet(C.SCOPE_DIR / "sample.parquet")
     if len(raw) != len(sample):
         raise ValueError(
             f"행 수 불일치: raw 필터 결과 {len(raw):,} vs sample.parquet {len(sample):,}. "
@@ -333,7 +333,7 @@ def main():
         args.oracle_k = args.k
 
     perp = load_perpetrator()
-    sample = pd.read_parquet(C.PROCESSED_DIR / "sample.parquet")
+    sample = pd.read_parquet(C.SCOPE_DIR / "sample.parquet")
     solved = sample[C.TARGET_BIN].values
     print(f"[load] {len(sample):,}행 (정렬 검증 통과), solved {int(solved.sum()):,}건, "
           f"k={args.k}")
@@ -362,12 +362,12 @@ def main():
         bake += b
 
     df = pd.DataFrame(rows)
-    out = C.OUTPUT_DIR / "edge_relatedness.csv"
+    out = C.scoped_output("edge_relatedness.csv")
     df.to_csv(out, index=False, encoding="utf-8-sig")
 
     if bake:
         bdf = pd.DataFrame(bake)
-        bout = C.OUTPUT_DIR / "edge_relatedness_similarity.csv"
+        bout = C.scoped_output("edge_relatedness_similarity.csv")
         bdf.to_csv(bout, index=False, encoding="utf-8-sig")
         if len(args.similarity) > 1:
             print("\n=== 유사도 인코딩 대결 (blind, oracle_lift) ===")

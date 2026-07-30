@@ -60,6 +60,15 @@ def main():
     parser.add_argument("--max_epochs", type=int, default=C.GNN_MAX_EPOCHS)
     parser.add_argument("--patience", type=int, default=C.GNN_PATIENCE)
     parser.add_argument("--val_size", type=float, default=C.GNN_VAL_SIZE)
+    parser.add_argument("--minibatch", action="store_true", default=C.GNN_MINIBATCH,
+                         help="NeighborLoader 미니배치로 학습(전국 규모에 필수). "
+                              "추론은 이웃을 전부 쓴다. **결과는 full-batch와 직접 비교 "
+                              "불가** — 3개 주에서 한 번 재현해 다리를 놓을 것.")
+    parser.add_argument("--batch_size", type=int, default=C.GNN_BATCH_SIZE)
+    parser.add_argument("--num_neighbors", type=lambda s: [int(x) for x in s.split(",")],
+                         default=C.GNN_NUM_NEIGHBORS,
+                         help="레이어별 이웃 샘플 수(쉼표구분, --num_layers와 길이 일치)")
+    parser.add_argument("--eval_batch_size", type=int, default=C.GNN_EVAL_BATCH_SIZE)
     parser.add_argument("--tag", default="", help="원장에서 구분할 자유 라벨")
     parser.add_argument("--blind", action="store_true",
                          help="민감속성 더미(config.SENSITIVE_FEATURE_COLS)를 X에서 제외. "
@@ -83,7 +92,15 @@ def main():
         hidden_dim=args.hidden_dim, num_layers=args.num_layers, dropout=args.dropout,
         lr=args.lr, weight_decay=args.weight_decay, aggr=args.aggr,
         max_epochs=args.max_epochs, patience=args.patience, val_size=args.val_size,
+        minibatch=args.minibatch, batch_size=args.batch_size,
+        num_neighbors=args.num_neighbors, eval_batch_size=args.eval_batch_size,
+        fair_min_count=C.GNN_FAIR_MIN_COUNT,
     )
+    if args.minibatch and len(args.num_neighbors) != args.num_layers:
+        raise SystemExit(
+            f"[에러] --num_neighbors {args.num_neighbors}의 길이가 "
+            f"--num_layers {args.num_layers}와 다르다. NeighborLoader는 레이어마다 "
+            f"fanout을 하나씩 받는다 — 길이가 어긋나면 실제 홉 수가 의도와 달라진다.")
     edge_types = ["geo", "temporal", "weapon"] if args.edge_type == "all" else [args.edge_type]
 
     test_idx = test_t.cpu().numpy()
@@ -95,7 +112,12 @@ def main():
                           family="train", blind=args.blind, edge_mode=args.edge_mode)
         if args.dump_predictions:
             mode_sfx = f"_{args.edge_mode}" if args.edge_mode else ""
-            pred_path = predictions.path_for("graphsage", f"{edge_type}{mode_sfx}{suffix}")
+            # 미니배치 덤프는 파일명이 달라야 한다. 같은 이름이면 다리 실행이
+            # 발표된 full-batch 덤프를 덮어쓰고, diagnose_fairness는 둘을 한 모델로
+            # 본다 -- 두 축을 비교하려고 만든 실행이 비교 대상을 지우는 꼴이 된다.
+            mb_sfx = "_mb" if args.minibatch else ""
+            pred_path = predictions.path_for("graphsage",
+                                             f"{edge_type}{mode_sfx}{suffix}{mb_sfx}")
             dump_test_predictions(rows, test_idx, y, pred_path)
             print(f"[save] {pred_path} (test 노드 {len(test_idx):,}개, seed 평균 proba)")
     print(f"[save] {results.results_path()} (family=train, {len(edge_types)}×{len(args.seeds)}회)")

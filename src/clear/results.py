@@ -142,6 +142,12 @@ def rows(family, metrics, *, model=None, tag=None, seed=None, attribute=None,
     """
     ci, std = ci or {}, std or {}
     ts = timestamp or datetime.now().isoformat(timespec="seconds")
+    # 스코프를 여기서 주입하는 이유: rows()가 모든 family(train/mitigate_*/cold_blocks…)의
+    # 공통 통로라, 호출부마다 넣으면 한 곳을 빠뜨렸을 때 전국 결과가 3개 주 결과와
+    # 같은 KEY를 갖고 **교체**해 버린다(results.csv는 tracked 실험 기록이다).
+    # 기본 스코프에서는 빈 dict라 기존 행의 params JSON이 한 글자도 안 바뀐다 --
+    # config.scope_param() 주석 참고(GNN_EDGE_MODE=None과 같은 규약).
+    params = {**(params or {}), **C.scope_param()}
     params_s, notes_s = _dump(params), _dump(notes)
     out = []
     for name, value in metrics.items():
@@ -177,7 +183,10 @@ def write(new_rows, path=None):
 # 학습 한 번이 남기는 노브/부가 측정치. clear.gnn.train_one 반환 dict의 키와 맞춘다.
 RUN_PARAMS = ["edge_type", "edge_mode", "k_neighbors", "hidden_dim", "num_layers",
               "dropout", "lr", "weight_decay", "aggr", "max_epochs", "patience",
-              "val_size", "fair_alpha", "fair_beta", "grad_clip"]
+              "val_size", "fair_alpha", "fair_beta", "grad_clip",
+              # full-batch 실행에서는 셋 다 None이라 params에 안 들어간다 --
+              # 기존 행의 KEY가 유지된다(edge_mode·scope와 같은 규약).
+              "minibatch", "batch_size", "num_neighbors"]
 
 
 def from_run(row, family, *, attribute=None, blind=None, group_set=None):

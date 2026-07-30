@@ -65,8 +65,15 @@ p가 극단일 때 나쁘므로, p_hat을 참으로 두고 직접 시뮬레이�
 ## 한계
 
 p_hat이 out-of-sample인 것은 **test 집합뿐**이다(학습 행의 p_hat은 낙관 편향).
-따라서 이 분석은 test 57,098행 위에서만 돈다 -- 블록당 표본이 그만큼 작다.
-전체 190,326행으로 넓히려면 k-fold cross-fitting이 필요하다(미실행).
+따라서 기본 실행은 test 집합 위에서만 돈다 -- 블록당 표본이 그만큼 작다.
+
+**전수로 넓히는 경로는 있다**: experiments/crossfit_predictions.py가 5-fold
+cross-fitting으로 모든 행에 out-of-fold p_hat을 만들고, 그 덤프를 --model로 주면
+이 스크립트가 그대로 읽는다(--out으로 표를 분리할 것 -- cold_blocks.csv는 test
+분할 표이고 지도·보고서가 그것을 인용한다). 전국에서 카운티 853 -> 1,803개가 됐고,
+그때 z ~ black_share가 +0.381 -> +0.290으로 내려갔다 -- 상관의 강도가 카운티 규모에
+의존한다는 뜻이다(확장설계서 §10-4-1). 3개 주에서는 하지 않았다: test 기준 143개
+블록이 이미 카운티의 97.1%를 덮어 얻을 것이 없다.
 
 **결정적 한계: 모델은 카운티를 모른다.** City는 특성이 아니라 블로킹 키일 뿐이라
 (config.CATEGORICAL_COLS에 없다) 그래프를 통해서만 간접적으로 들어간다. 그래서
@@ -212,11 +219,20 @@ def main():
                          "증폭하므로 이례성 판정이 인종에 기운다.")
     ap.add_argument("--blocks", nargs="*", default=["county"],
                     choices=list(BLOCK_KEYS))
-    ap.add_argument("--min_n", type=int, default=20,
-                    help="블록 최소 표본. 작을수록 검정력이 없다(test 기준 n>=20이면 "
-                         "카운티 143개 = test의 97.1%%)")
+    ap.add_argument("--min_n", type=int, nargs="+", default=[20],
+                    help="블록 최소 표본(여러 개 가능: --min_n 20 50 100). 작을수록 "
+                         "검정력이 없다(test 기준 n>=20이면 카운티 143개 = test의 97.1%%). "
+                         "여러 개를 주면 각각에 대해 **검정을 다시 돌린다** — BH FDR의 "
+                         "q값이 검정 개수에 의존하므로, 한 번 돌리고 n으로 거르는 것은 "
+                         "다른 결과다. 웹 지도의 최소표본 슬라이더가 이 행들을 쓴다.")
     ap.add_argument("--n_boot", type=int, default=10000)
     ap.add_argument("--calibrate", choices=["shift", "none"], default="shift")
+    ap.add_argument("--out", default="cold_blocks.csv",
+                    help="블록 표 파일명(스코프 디렉터리 안). 크로스피팅 덤프처럼 "
+                         "**다른 분할**에서 나온 결과는 여기를 바꿔 파일을 분리한다 "
+                         "-- 기본 파일은 get_split의 test 기준이고 지도·보고서 60곳이 "
+                         "그 표를 인용한다. 두 분할을 한 파일에 섞으면 어느 행이 어느 "
+                         "분할인지 알 수 없게 된다.")
     ap.add_argument("--priority_q", type=float, default=0.10,
                     help="미해결 사건 중 p_hat 상위 이 비율을 '재수사 우선순위'로 센다")
     args = ap.parse_args()
@@ -226,7 +242,7 @@ def main():
         raise SystemExit(f"[에러] 덤프 없음: {path}\n"
                          f"  먼저 실행: python -m experiments.mitigate_loss --alphas 50")
     dump = predictions.load(path)
-    sample = pd.read_parquet(C.PROCESSED_DIR / "sample.parquet")
+    sample = pd.read_parquet(C.SCOPE_DIR / "sample.parquet")
 
     # row_index는 features/sample.parquet의 행 위치라 그대로 join된다.
     keys = sorted({c for b in args.blocks for c in BLOCK_KEYS[b]})
@@ -244,13 +260,16 @@ def main():
               "같은 방향으로 민다.")
 
     all_rows = []
-    for b in args.blocks:
-        tab = analyse(df, BLOCK_KEYS[b], args.min_n, args.n_boot,
+    # min_n마다 **검정을 다시** 돌린다. 한 번 돌리고 n으로 거르는 것과 다르다 --
+    # BH FDR의 q값이 동시에 검정한 블록 수에 의존하기 때문이다.
+    for min_n, b in [(m, b) for m in args.min_n for b in args.blocks]:
+        tab = analyse(df, BLOCK_KEYS[b], min_n, args.n_boot,
                       args.priority_q, C.RANDOM_STATE)
         if tab.empty:
-            print(f"[{b}] n>={args.min_n} 블록 없음")
+            print(f"[{b}] n>={min_n} 블록 없음")
             continue
         tab.insert(0, "block_key", b)
+        tab.insert(1, "min_n", min_n)
         all_rows.append(tab)
 
         n_cold = int((tab["flag"] == "cold").sum())
@@ -260,9 +279,8 @@ def main():
         # 우선순위로 쓰이면 그 자체로 자원 배분이기 때문이다.
         corr = float(np.corrcoef(tab["z"], tab["black_share"])[0, 1]) \
             if len(tab) > 2 else np.nan
-        print(f"\n=== {b} ({BLOCK_KEYS[b]}) ===")
-        print(f"블록 {len(tab)}개(n>={args.min_n}), FDR 5% 유의: "
-              f"cold {n_cold}개 / warm {n_warm}개")
+        print(f"\n=== {b} ({BLOCK_KEYS[b]}, n>={min_n}) ===")
+        print(f"블록 {len(tab)}개, FDR 5% 유의: cold {n_cold}개 / warm {n_warm}개")
         print(f"[공정성] z ~ black_share 상관 {corr:+.3f}   "
               f"cold 평균 흑인비중 {tab.loc[tab.flag == 'cold', 'black_share'].mean():.3f} / "
               f"warm {tab.loc[tab.flag == 'warm', 'black_share'].mean():.3f} / "
@@ -273,17 +291,19 @@ def main():
         if len(head):
             print("[가장 이례적으로 미해결이 몰린 블록]")
             print(head[BLOCK_KEYS[b] + show].round(3).to_string(index=False))
+        # params의 min_n은 **스칼라**여야 한다. args.min_n(리스트)을 그대로 넣으면
+        # 기존 행과 params JSON이 갈려 재실행이 교체가 아니라 중복이 된다.
         results.write(results.rows(
             "cold_blocks",
             {"n_significant_blocks": n_cold, "n_eval": len(tab)},
-            model=args.model, tag=b, group_set=f"n>={args.min_n}",
-            params={"block_key": b, "min_n": args.min_n, "n_boot": args.n_boot,
+            model=args.model, tag=b, group_set=f"n>={min_n}",
+            params={"block_key": b, "min_n": min_n, "n_boot": args.n_boot,
                     "calibrate": args.calibrate},
             notes={"delta": round(cal["delta"], 4), "n_warm": n_warm,
                    "z_black_share_corr": round(corr, 3)}))
 
     if all_rows:
-        out = C.OUTPUT_DIR / "cold_blocks.csv"
+        out = C.scoped_output(args.out)
         pd.concat(all_rows, ignore_index=True).to_csv(
             out, index=False, encoding="utf-8-sig")
         print(f"\n[save] {out}")

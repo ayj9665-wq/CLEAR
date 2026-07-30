@@ -242,7 +242,7 @@ def main():
                     help="색 스케일 상한(기본 |z|의 최대). 여러 그림의 축을 맞출 때")
     args = ap.parse_args()
 
-    src = C.OUTPUT_DIR / "cold_blocks.csv"
+    src = C.scoped_output("cold_blocks.csv")
     if not src.exists():
         raise SystemExit(f"[에러] {src} 없음. 먼저: "
                          f"python -m experiments.detect_cold_blocks")
@@ -258,11 +258,11 @@ def main():
         print(missing.to_string(index=False))
     tab = tab[matched]
 
-    p1 = C.OUTPUT_DIR / "map_fig1_county_residual.png"
+    p1 = C.scoped_output("map_fig1_county_residual.png")
     vmax = fig_map(tab, p1, args.min_n, args.vmax)
     print(f"[save] {p1}  (카운티 {len(tab)}개, 색 스케일 |z| <= {vmax:.1f})")
 
-    p2 = C.OUTPUT_DIR / "map_fig2_residual_vs_race.png"
+    p2 = C.scoped_output("map_fig2_residual_vs_race.png")
     fig_race(tab, p2)
     print(f"[save] {p2}")
 

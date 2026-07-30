@@ -35,6 +35,7 @@ County가 충돌한다. 우리 데이터가 'Baltimore city'로 적고 있으므
 조인 실패는 조용히 넘기지 않고 목록으로 돌려준다(match_report).
 """
 import json
+import unicodedata
 import urllib.request
 
 import numpy as np
@@ -65,15 +66,42 @@ STATE_ABBREV = {
 }
 
 # 떼어낼 접미사. ' city'는 **의도적으로 없다**(독립시 구분이 사라진다).
-_SUFFIXES = (" county", " parish", " borough", " census area", " municipality",
-             " city and borough", " municipio")
+#
+# **긴 것부터** 봐야 한다. 원래는 선언 순서대로 첫 일치에서 멈췄는데, ' borough'가
+# ' city and borough'보다 앞에 있어서 'Juneau City and Borough'가 'juneau city'로
+# 잘렸다(알래스카 전역이 이렇게 미매칭됐다). 정렬로 강제한다.
+_SUFFIXES = tuple(sorted(
+    (" county", " parish", " borough", " census area", " municipality",
+     " city and borough", " municipio"),
+    key=len, reverse=True))
+
+# 데이터의 주 이름 오기. 'Rhodes Island'는 전국 표본에서 로드아일랜드 전체를
+# 미매칭으로 만든다(1,203건).
+STATE_ALIASES = {"Rhodes Island": "Rhode Island"}
 
 # 데이터의 옛 이름 -> 현재 Census 이름. 1980-2014 기록이라 개명이 섞여 있다.
+#
+# **키는 normalize()를 통과한 형태여야 한다.** 알래스카 항목이 원래 공백 표기라
+# (normalize는 하이픈을 보존한다) 한 번도 일치하지 않는 죽은 별칭이었다 -- 3개 주
+# 표본에는 알래스카가 없어서 드러나지 않았다.
 ALIASES = {
     ("Florida", "dade"): "miami-dade",
-    ("Alaska", "prince of wales outer ketchikan"): "prince of wales-hyder",
     ("South Dakota", "shannon"): "oglala lakota",
+    # 알래스카 census area 개편(2008~2015). 데이터는 개편 전 이름이라 분할 후
+    # 인구가 많은 쪽으로 보낸다 -- 정확한 복원이 불가능하므로 근사임을 명시한다.
+    ("Alaska", "prince of wales-outer ketchikan"): "prince of wales-hyder",
+    ("Alaska", "wrangell-petersburg"): "wrangell",
+    ("Alaska", "skagway-hoonah-angoon"): "hoonah-angoon",
+    # 네바다 카슨시티는 데이터가 'Carson City city'로 중복 표기한다.
+    ("Nevada", "carson city city"): "carson city",
+    # 2001년 독립시 지위를 반납하고 Alleghany 카운티로 편입.
+    ("Virginia", "clifton forge"): "alleghany",
 }
+
+# 'Repressed'는 카운티명이 아니라 **비식별 처리 표시**다(MAP이 소표본 관할을 가린
+# 것). 조인 실패가 아니라 애초에 지도에 올릴 수 없는 행이므로, 미매칭 목록에서
+# 빼서 진짜 조인 문제와 섞이지 않게 한다.
+NON_COUNTY = {"repressed"}
 
 
 def _cache(url, name):
@@ -86,8 +114,14 @@ def _cache(url, name):
 
 
 def normalize(name):
-    """카운티명 정규화: 소문자, 구두점 제거, 접미사 제거, 공백 압축."""
-    s = str(name).strip().lower().replace(".", "").replace("'", "")
+    """카운티명 정규화: 발음부호 제거, 소문자, 구두점 제거, 접미사 제거, 공백 압축.
+
+    발음부호를 접는 이유: Census는 'Doña Ana County'로 쓰고 우리 데이터는
+    'Dona Ana'로 쓴다. NFKD로 분해한 뒤 결합문자를 버리면 둘 다 'dona ana'가 된다.
+    """
+    s = unicodedata.normalize("NFKD", str(name).strip())
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.lower().replace(".", "").replace("'", "")
     for suf in _SUFFIXES:
         if s.endswith(suf):
             s = s[: -len(suf)]
@@ -114,16 +148,38 @@ def join_fips(df, state_col="State", city_col="City"):
     """
     ref = fips_table()
     out = df.copy()
-    out["_state"] = out[state_col].astype(str)
+    out["_state"] = out[state_col].astype(str).map(lambda s: STATE_ALIASES.get(s, s))
     out["_norm"] = out[city_col].map(normalize)
     key = list(zip(out["_state"], out["_norm"]))
     out["_norm"] = [ALIASES.get(k, k[1]) for k in key]
 
     m = ref.drop_duplicates(["state", "county_norm"]).set_index(
         ["state", "county_norm"])["fips"]
-    out["fips"] = pd.MultiIndex.from_arrays(
-        [out["_state"], out["_norm"]]).map(m)
-    missing = out[out["fips"].isna()][[state_col, city_col]].drop_duplicates()
+
+    def _lookup(names):
+        return pd.MultiIndex.from_arrays([out["_state"], names]).map(m)
+
+    out["fips"] = _lookup(out["_norm"])
+
+    # 폴백 두 벌. **둘 다 1차 조회가 실패한 행에만** 적용한다 -- 먼저 시도하면
+    # 애매한 이름의 판정을 바꿔버린다. 예: 버지니아 'Richmond'는 'Richmond County'와
+    # 'Richmond city'가 **둘 다 존재**하는데, 1차에서 County로 붙는 현행 동작을
+    # 유지해야 과거 결과가 재현된다.
+    for fallback in (
+        # 붙여쓰기: Census 'DeKalb'/'LaPorte'/'DeSoto' vs 데이터 'De Kalb'/'La Porte'
+        lambda s: s.str.replace(" ", "", regex=False),
+        # 독립시: Census 'Norfolk city' vs 데이터 'Norfolk'. 버지니아 38개 독립시가
+        # 전부 여기 걸린다(원래 카운티가 폐지돼 동명 카운티 자체가 없다).
+        lambda s: s + " city",
+    ):
+        miss = out["fips"].isna()
+        if not miss.any():
+            break
+        out.loc[miss, "fips"] = _lookup(fallback(out["_norm"]))[miss]
+
+    # 비식별 표시는 '조인 못 한 카운티'가 아니라 '카운티가 아닌 값'이다.
+    missing = out[out["fips"].isna() & ~out["_norm"].isin(NON_COUNTY)]
+    missing = missing[[state_col, city_col]].drop_duplicates()
     return out.drop(columns=["_state", "_norm"]), missing
 
 
@@ -152,7 +208,7 @@ def load_geometry(fips=None):
 
 
 def albers(lon, lat, lat1=29.5, lat2=45.5, lon0=-96.0, lat0=37.5):
-    """Albers 등적 원뿔 투영(CONUS 표준 파라미터). 단위구 기준 -- 지도 축척은 임의.
+    """Albers 등적 원뿔 투영(기본값은 CONUS 표준 파라미터). 단위구 기준 -- 축척은 임의.
 
     등적(equal-area)이라야 코로플레스가 정직하다. 등각 투영은 고위도 카운티의
     면적을 부풀려 '큰 카운티가 중요해 보이는' 착시를 만든다.
@@ -163,8 +219,131 @@ def albers(lon, lat, lat1=29.5, lat2=45.5, lon0=-96.0, lat0=37.5):
     Cc = np.cos(p1) ** 2 + 2 * n * np.sin(p1)
     rho = np.sqrt(np.maximum(Cc - 2 * n * np.sin(phi), 0)) / n
     rho0 = np.sqrt(max(Cc - 2 * n * np.sin(p0), 0)) / n
-    theta = n * (lam - l0)
+    # 경도차를 (-pi, pi]로 감는다. 안 감으면 날짜변경선을 넘는 도형이 지구를 한 바퀴
+    # 돌아 반대쪽으로 날아간다 -- 알류샨 열도(경도가 -180과 +180을 오간다)가 정확히
+    # 그 경우이고, 감기 전 알래스카의 y 범위가 0.36~2.33까지 벌어졌다. CONUS는
+    # 애초에 날짜변경선과 무관하므로 이 변경의 영향을 받지 않는다.
+    dlam = (lam - l0 + np.pi) % (2 * np.pi) - np.pi
+    theta = n * dlam
     return rho * np.sin(theta), rho0 - rho * np.cos(theta)
+
+
+# ---- Albers USA 합성(전국 지도) ---------------------------------------------
+#
+# CONUS 파라미터 하나로는 알래스카·하와이가 화면 밖으로 나간다. 표준 해법은
+# **부분마다 다른 Albers를 쓰고 결과를 이동·축소해 한 화면에 배치**하는 것이다
+# (d3.geoAlbersUsa와 같은 구성).
+#
+# 정직성에 대해 분명히 해둘 것: **합성 전체는 등적이 아니다.** 각 조각 안에서는
+# 등적이지만 알래스카는 0.35배로 줄여 놓았으므로, 알래스카 카운티의 화면 면적을
+# CONUS 카운티와 비교하면 안 된다. 지도에 이 배율을 표기한다(§6-9의 오독 방지와
+# 같은 성격 -- 색 이전에 좌표부터 오해를 부른다).
+#
+# 분기는 **점이 아니라 도형 단위**로 해야 한다. 점마다 판정하면 경계에 걸친
+# 다각형이 두 투영으로 찢어진다. 그래서 FIPS 앞 2자리(주 코드)로 나눈다.
+ALASKA_FIPS, HAWAII_FIPS = "02", "15"
+
+_USA_PARTS = {
+    # 조각별 (Albers 파라미터, 축척, 이동). 이동량은 CONUS를 투영해 본 실측
+    # 경계에 맞춰 잡는다(_place_parts 참고).
+    ALASKA_FIPS: dict(params=(55.0, 65.0, -154.0, 50.0), scale=0.35),
+    HAWAII_FIPS: dict(params=(8.0, 18.0, -157.0, 13.0), scale=1.0),
+    None:        dict(params=(29.5, 45.5, -96.0, 37.5), scale=1.0),
+}
+
+# 조각을 CONUS 아래-왼쪽에 놓기 위한 평행이동(단위구 좌표).
+#
+# 눈으로 고른 값이 아니라 **실측 범위에서 역산**했다(각 조각을 자기 투영으로 그린 뒤
+# 경계를 잰 값):
+#   CONUS x[-0.369, 0.353] y[-0.210, 0.246]
+#   AK    x[-0.339, 0.233] y[ 0.065, 0.372]   (0.35배 축소 후 x[-0.119,0.082] y[0.023,0.130])
+#   HI    x[-0.058, 0.036] y[ 0.104, 0.161]
+# **y는 북쪽으로 증가**하므로(아래 albers 주석) "CONUS 아래"는 y < -0.210이다. AK의
+# 위 끝을 y=-0.24, HI의 위 끝을 y=-0.25에 두고 x_min을 각각 -0.36, -0.13에 맞춘 값이다.
+#
+# **하와이는 CONUS와 같은 축척(1.0)이라 면적 비교가 성립한다. 줄인 것은 알래스카뿐**
+# (0.35배)이므로, 오독 방지 문구는 알래스카만 지목하면 된다.
+_USA_OFFSET = {ALASKA_FIPS: (-0.241, -0.370), HAWAII_FIPS: (-0.072, -0.411),
+               None: (0.0, 0.0)}
+
+
+def albers_usa(lon, lat, fips):
+    """Albers USA 합성. fips는 **도형 하나의** 5자리 코드(앞 2자리만 본다).
+
+    반환은 albers()와 같은 단위구 스케일이며 **y는 북쪽으로 증가**한다(위도가
+    높을수록 rho가 작아지고 y = rho0 - rho·cos θ가 커진다). 실측: Seattle y=+0.220
+    vs Miami y=-0.185. 따라서 matplotlib에 그릴 때 **y를 뒤집으면 안 된다** --
+    experiments/map_figures.py가 albers()를 그대로 쓰는 것과 같은 규약이다.
+    """
+    key = str(fips)[:2]
+    part = _USA_PARTS.get(key if key in _USA_PARTS else None)
+    lat1, lat2, lon0, lat0 = part["params"]
+    x, y = albers(lon, lat, lat1, lat2, lon0, lat0)
+    dx, dy = _USA_OFFSET.get(key if key in _USA_OFFSET else None)
+    return x * part["scale"] + dx, y * part["scale"] + dy
+
+
+# ---- 웹 지도용: 단순화 · SVG path 직렬화 --------------------------------------
+#
+# 코로플레스는 결국 <path>에 fill을 칠하는 것이므로 브라우저에는 좌표만 넘기면
+# 된다(확장설계서 §6-3). 어려운 쪽(투영·단순화)은 여기 파이썬에서 끝낸다.
+
+def simplify(ring, tol):
+    """Douglas-Peucker. ring: (N,2), tol: 투영 좌표 단위 허용오차.
+
+    **재귀가 아니라 스택**으로 돈다 -- 카운티 외곽선은 점이 수천 개라 재귀로 짜면
+    파이썬 기본 재귀한도에 걸린다.
+
+    주의: 다각형마다 **독립적으로** 단순화하므로 인접 카운티의 공유 경계가 서로
+    다르게 줄어 틈(sliver)이 생긴다. 위상을 보존하는 단순화는 훨씬 복잡하고, 이
+    지도에서는 얇은 흰 stroke로 경계를 그리므로 그 틈이 stroke 아래로 숨는다.
+    허용오차를 키울 때는 **렌더해서 확인**할 것(§6-3-1의 교훈).
+    """
+    n = len(ring)
+    if n < 3:
+        return ring
+    keep = np.zeros(n, dtype=bool)
+    keep[0] = keep[-1] = True
+    stack = [(0, n - 1)]
+    while stack:
+        i, j = stack.pop()
+        if j <= i + 1:
+            continue
+        seg = ring[j] - ring[i]
+        L = np.hypot(*seg)
+        pts = ring[i + 1:j] - ring[i]
+        # 선분 길이가 0이면(닫힌 고리의 시작=끝) 점까지의 거리로 대체한다.
+        d = (np.abs(pts[:, 0] * seg[1] - pts[:, 1] * seg[0]) / L if L > 0
+             else np.hypot(pts[:, 0], pts[:, 1]))
+        k = int(np.argmax(d))
+        if d[k] > tol:
+            k += i + 1
+            keep[k] = True
+            stack.append((i, k))
+            stack.append((k, j))
+    return ring[keep]
+
+
+def svg_path(rings, scale, ox, oy, tol=0.0, ndigits=1):
+    """링 목록 -> SVG path 문자열 하나(서브패스 여러 개, 각각 Z로 닫는다).
+
+    좌표는 (v*scale + offset)으로 viewBox에 맞춘 뒤 ndigits로 **양자화**한다.
+    단순화 다음으로 페이로드를 가장 크게 줄이는 것이 이 반올림이다 -- 좌표
+    문자열이 '123.456789'에서 '123.5'로 줄어든다.
+
+    y는 albers가 북쪽으로 증가하게 주는데 SVG는 아래로 증가하므로 **여기서 뒤집는다**
+    (호출부가 또 뒤집지 않도록 이 함수가 유일한 뒤집기 지점이다).
+    """
+    out = []
+    for ring in rings:
+        r = simplify(ring, tol) if tol > 0 else ring
+        if len(r) < 3:
+            continue
+        xs = np.round(r[:, 0] * scale + ox, ndigits)
+        ys = np.round(-r[:, 1] * scale + oy, ndigits)
+        pts = [f"{x:g},{y:g}" for x, y in zip(xs, ys)]
+        out.append("M" + "L".join(pts) + "Z")
+    return "".join(out)
 
 
 # ---- 색: 발산형 (라이트 모드 전용) -------------------------------------------

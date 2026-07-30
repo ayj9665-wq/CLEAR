@@ -42,7 +42,7 @@ def load_xy(blind=False):
     bool 더미는 int8로 캐스팅한다 — XGBoost 입력을 정리하고, GNN은 이후
     float32로 변환하므로 무손실이다.
     """
-    df = pd.read_parquet(C.PROCESSED_DIR / "features.parquet")
+    df = pd.read_parquet(C.SCOPE_DIR / "features.parquet")
     sens_cols = [c for c in df.columns if c.startswith("sens__")]
     y = df[C.TARGET_BIN].values
     X = df.drop(columns=[C.TARGET_BIN] + sens_cols)
@@ -89,7 +89,7 @@ def load_sensitive():
     돌려준다. 공정성 진단(diagnose_fairness)에서 test 인덱스로 iloc해 예측과 join하기 위한 것 —
     get_split이 돌려주는 인덱스는 이 DataFrame 행 위치와 그대로 대응한다.
     """
-    df = pd.read_parquet(C.PROCESSED_DIR / "features.parquet")
+    df = pd.read_parquet(C.SCOPE_DIR / "features.parquet")
     sens_cols = [c for c in df.columns if c.startswith("sens__")]
     return df[sens_cols].reset_index(drop=True)
 

@@ -59,7 +59,14 @@ def main():
     # 벌점 대상 그룹 = 격차를 재는 그룹집합과 동일하게 맞춘다. 그 외(소수 그룹·
     # Unknown)는 -1로 두어 벌점에서 빠진다 — 재는 것과 누르는 것이 다르면 곡선을
     # 해석할 수 없다.
-    counts = su.sens[su.attr_col].value_counts()
+    #
+    # **개수는 test 집합에서 센다.** sweep.run_point가 격차를 잴 때 test 예측 덤프로
+    # F.select_groups(cnt, min_n)을 부르므로, 전체 표본으로 세면 두 기준이 갈린다.
+    # 3개 주에서는 우연히 같았다(Asian/PI가 전체 4,770 / test 1,431로 양쪽 다 5000
+    # 미만) 전국에서 갈라진다 — 전체 9,890(포함) vs test 2,940(제외). 그대로 두면
+    # 벌점은 3개 그룹을 누르는데 보고되는 격차는 White-Black 2개 그룹이라,
+    # "두 그룹이면 이 벌점은 선택률 격차의 제곱"이라는 이 방법의 근거 자체가 깨진다.
+    counts = su.sens.iloc[su.test_idx][su.attr_col].value_counts()
     targets = [g for g in counts.index
                if g != C.FAIRNESS_UNKNOWN_LABEL and counts[g] >= args.min_n]
     idx_of = {g: i for i, g in enumerate(sorted(targets))}
@@ -70,7 +77,8 @@ def main():
 
     # 그래프는 alpha 격자 내내 동일하므로 한 번만 만들어 재사용한다(mitigate_graph와 달리
     # 개입이 손실 쪽에 있어 그래프가 안 바뀐다).
-    data = gnn.build_data(su.X, args.edge_type, args.k_neighbors, su.device)
+    data = gnn.build_data(su.X, args.edge_type, args.k_neighbors, su.device,
+                          minibatch=su.hp["minibatch"])
     print(f"[graph:{args.edge_type}] 엣지 {data.edge_index.shape[1]:,}개(방향)")
 
     for alpha in args.alphas:

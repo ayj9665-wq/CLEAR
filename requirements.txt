@@ -15,3 +15,12 @@ pyarrow>=14.0
 #   pip install torch --index-url https://download.pytorch.org/whl/cu124
 torch>=2.6
 torch-geometric>=2.7
+# NeighborLoader(전국 확장의 미니배치 학습)에만 필요하다. torch-geometric의
+# NeighborSampler는 pyg-lib 또는 torch-sparse를 요구하는데, **torch-sparse는 이
+# 조합(win_amd64 / torch 2.6+cu124 / cp313)에 프리빌트 wheel이 없어** 소스 빌드로
+# 떨어진다(MSVC + CUDA 툴킷 필요). pyg-lib은 wheel이 있으므로 이쪽을 쓴다.
+# PyPI에는 없고 PyG 인덱스에서만 받는다:
+#   pip install pyg-lib -f https://data.pyg.org/whl/torch-2.6.0+cu124.html
+# full-batch(3개 주 기본 경로)만 돌린다면 없어도 된다 — clear.gnn이 loader import를
+# 함수 안에 두고 있어서, --minibatch를 쓸 때만 이 의존이 걸린다.
+pyg-lib; platform_system != "Windows"   # Windows는 위 인덱스에서 수동 설치

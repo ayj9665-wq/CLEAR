@@ -29,8 +29,16 @@ prepared artifacts and has **no order among itself**, so those run as modules.
 pip install -r requirements.txt
 cd src
 
+# --- scope (which sample everything below operates on) ----------------------
+# Unset  = "ca_tx_mi" (California+Texas+Michigan, 190,326 rows) — every path below
+#          is exactly as it has always been.
+# Set    = "national" (no state filter, 638,454 rows) — sample/features/graph move
+#          to data/processed/national/, dumps to outputs/predictions/national/,
+#          result CSVs to outputs/national/. results.csv stays shared.
+export CLEAR_SCOPE=national         # (or CLEAR_SCOPE=national python ... per command)
+
 # --- data pipeline (ordered; each stage reads what the previous one wrote) ---
-python 01_clean.py            # raw CSV -> data/processed/clean.parquet
+python 01_clean.py            # raw CSV -> data/processed/clean.parquet  (scope-independent)
 python 02_sample.py           # -> data/processed/sample.parquet
 python 03_features.py         # -> data/processed/features.parquet
 python 04_build_graph.py      # -> data/processed/graph/edges_{geo,temporal,weapon}_k{k}.npy (k=config.K_NEIGHBORS)
@@ -44,12 +52,20 @@ python -m experiments.train_gnn --edge_type all                                 
 python -m experiments.train_gnn --edge_type geo --hidden_dim 128 --tag my_sweep # any hyperparam overridable via CLI
 python -m experiments.train_gnn --edge_type geo --k_neighbors 20                # use a --k 20 graph built above
 python -m experiments.train_gnn --edge_type geo --seeds 42,43,44                # torch seeds to repeat over (split stays fixed)
+python -m experiments.train_gnn --edge_type geo --blind --minibatch --tag blind_mb
+                                    # NeighborLoader mini-batch (required at national scale;
+                                    # dumps to graphsage_geo_blind_mb.csv, NOT comparable to
+                                    # full-batch rows — see the bridge-run note below)
 python -m experiments.train_gnn --edge_type geo_temporal                        # union of geo+temporal edges
 python -m experiments.train_gnn --blind        # race/sex/ethnicity dummies dropped from X (graph unchanged)
 
-python -m experiments.diagnose_fairness   # diagnoses EVERY dump in outputs/predictions/ -> fairness_{group_metrics,gaps,model_contrasts}.csv
+python -m experiments.diagnose_fairness   # diagnoses EVERY dump in outputs/predictions/ -> fairness_{group_metrics,gaps,model_contrasts,gaps_standardized}.csv
 python -m experiments.diagnose_fairness --models graphsage_geo xgboost   # restrict to specific dumps
 python -m experiments.diagnose_fairness --min_n 5000 --n_boot 2000       # stricter group floor / more bootstrap reps
+python -m experiments.diagnose_fairness --stratum State --stratum_min_n 100
+                                          # also writes fairness_gaps_standardized.csv (default;
+                                          # --stratum none skips). Pooled gaps carry a
+                                          # region-composition confound — see below.
 python -m experiments.edge_homophily      # -> outputs/edge_homophily.csv (are edges a sensitive-attribute proxy?)
 python -m experiments.edge_relatedness    # -> outputs/edge_relatedness.csv (do edges link genuinely related cases?)
 python -m experiments.edge_relatedness --no_oracle                  # skip the O(n^2)-per-block oracle
@@ -64,7 +80,26 @@ python -m experiments.mitigate_loss --alphas 0 25 50 75 --seeds 42,43,44,45 # fi
 
 python -m experiments.detect_cold_blocks  # -> outputs/cold_blocks.csv (blocks with unexplained excess unsolved; family=cold_blocks)
 python -m experiments.detect_cold_blocks --blocks county hargrove --min_n 50
+python -m experiments.detect_cold_blocks --min_n 20 50 100   # re-runs the test at each floor
+                                    # (BH q depends on how many blocks were tested together,
+                                    #  so this is NOT the same as filtering one run by n)
 python -m experiments.detect_cold_blocks --model graphsage_geo_blind --calibrate none   # diagnostic only, see below
+python -m experiments.detect_cold_blocks --out cold_blocks_cv5.csv   # separate file for a different split (cross-fitting)
+
+python -m experiments.crossfit_predictions --minibatch   # 5-fold out-of-fold p̂ for EVERY row
+                                    # -> predictions/national/graphsage_fairloss_a100_mb_cv5.csv (638,454 rows)
+                                    # ~76 min at national scope; alpha/blind/minibatch fixed to the a100 gate value
+python -m experiments.crossfit_compare    # -> outputs/national/crossfit_compare.csv (the §2-1 judgment)
+
+python -m experiments.build_web_map       # -> outputs[/{scope}]/web/map_{scope}.html
+                                    # self-contained, zero external requests; needs the
+                                    # three min_n levels above for the sample-floor slider
+python -m experiments.build_web_map --simplify_km 1.5   # payload knob (1.0km=468KB paths, 2.0km=399KB)
+# the two national maps. --src picks the split and drives the caption; --out must move with it.
+python -m experiments.build_web_map --src cold_blocks_cv5.csv --out map_national.html --simplify_km 1.5
+                                    # PRIMARY: cross-fit, 1,800 counties carry data
+python -m experiments.build_web_map --src cold_blocks.csv --out map_national_test.html --simplify_km 1.5
+                                    # reference: test split, 850 counties, same split as fairness_*.csv
 
 python -m experiments.map_figures         # -> outputs/map_fig{1,2}_*.png (county choropleth of the residuals + the race panel)
 python -m experiments.poster_figures      # -> outputs/poster_fig{1,2}_*.png (reads result CSVs only, no retraining)
@@ -105,6 +140,68 @@ citations across the fairness and benchmark reports depend on this.
 the single source of truth for paths, target encoding, column lists, and
 hyperparameters (random state, split ratios, CV folds). When changing any of
 these, edit `config.py` rather than a script.
+
+**Scope is an axis, because the national extension re-runs the whole pipeline.**
+`CLEAR_SCOPE` (`ca_tx_mi` default, `national`) picks the sample, and
+`config.SAMPLE_STATES` is *derived* from it — one switch, so the state filter and
+the output paths cannot drift apart. Three things follow, and the reasons are not
+interchangeable:
+
+- **`C.SCOPE_DIR`** holds `sample.parquet`/`features.parquet`/`graph/`; **`C.scoped_output(name)`**
+  holds the result CSVs and figures; **`predictions_dir()`** holds the dumps. In the
+  default scope all three resolve to exactly the old paths, so nothing moved and
+  there was no migration.
+- **`clean.parquet` stays outside the scope.** `01_clean.py` has no state filter, so
+  its output is already national and both scopes share it. Scoping it would make a
+  national run look for a file that is never written.
+- **`results.csv` is *not* split by scope.** It's long format and `scope` rides in
+  `params`, so one file separates by groupby — the "a new metric is new rows, not a
+  new column" rule applied to samples.
+
+The dump directory split is the load-bearing part, not tidiness. `row_index` in a
+prediction dump is a **row position into `features.parquet`**, and `diagnose_fairness`
+`iloc`s it into `load_sensitive()`. Point that at a different sample and the sensitive
+attributes join to the wrong rows while still producing a plausible table —
+`assert_same_test_set` compares dumps to each other, so it passes. That would silently
+void the committed flat-model dumps the headline
+`graphsage_geo_blind − xgboost_blind = +0.82` rests on. Directory isolation is the
+primary guard (`discover()` doesn't recurse, and the legacy `outputs/predictions_*.csv`
+fallback is gated to the default scope); `assert_same_test_set` additionally rejects a
+dump whose max `row_index` exceeds the current scope's row count, which catches files
+moved by hand.
+
+`config.scope_param()` returns `{}` in the default scope and `clear.results.rows()`
+merges it into `params` — **`None`-by-default for the same reason `GNN_EDGE_MODE` is**:
+existing rows' `params` JSON stays byte-identical, so their identity KEY holds and a
+re-run still *replaces* instead of duplicating. Injecting it in `rows()` rather than at
+each call site is deliberate — `rows()` is the one funnel every family passes through,
+and a missed call site would let a national run overwrite three-state rows in a tracked
+file.
+
+**`--minibatch` (NeighborLoader) is the other half, and it is a separate axis, not a
+speedup.** National `geo` is 25.0M directed edges — ~20 GB for 2 layers plus backward,
+against 12.9 GB, so full-batch is out. Training samples `config.GNN_NUM_NEIGHBORS`
+(`[25, 10]`) per layer, but **val/test inference uses every neighbour**: the dumped
+`proba` feeds every fairness gap, `detect_cold_blocks`'s `E_b`, and the map's colours,
+so sampling noise there would propagate into all of it. The three loaders are built once
+per `train_one` — building the val loader per epoch rebuilds the CSC index every time and
+walked resident memory from 1.8 GB to 5.3 GB on three states alone. Dumps and tags get an
+`_mb` suffix (`graphsage_geo_blind_mb.csv`), applied in `train_gnn` and in
+`sweep.run_point` so both mitigation scripts inherit it; without it a bridge run
+overwrites the very full-batch dump it is meant to be compared against. Needs `pyg-lib`
+(PyG's own wheel index — `torch-sparse` has no wheel for win/torch2.6+cu124/cp313), but
+only when `--minibatch` is used: the loader import sits inside the function.
+
+**The bridge run says accuracy carries over and fairness does not.** Three-state blind
+`geo`, 3 seeds each, mini-batch minus full-batch: AUC +0.00007 (0.06× the full-batch seed
+std), MCC +0.00069 (1.45×), Balanced Accuracy −0.00253 (3.90×). Small — and consistent
+with the graph's value here being *an unbiased sample of the block's feature
+distribution*, which sampling 25 of ~40 neighbours preserves. But the **operating point
+moves**: predicted clearance 53.2% → 60.7% (actual 68.2%), and race amplification
+**1.48 [1.24, 1.78] → 1.26 [1.04, 1.54], paired difference +0.23 [+0.13, +0.34]**, CI
+excluding zero. Every fairness number here is threshold-dependent, so **national results
+compare only against three-state *mini-batch* values**. The full-batch 1.48 is a number
+on a different axis.
 
 **Two tiers: an ordered pipeline, and an unordered experiment surface.**
 `src/01_clean.py` … `src/04_build_graph.py` are the pipeline — each reads what
@@ -176,7 +273,7 @@ dataset/kaggle_homicide_Reports_1980_2014.csv  (not in git, ~638k rows)
   -> experiments/train_gnn.py                     (reads features.parquet + edges_*.npy ->
                                            outputs/predictions/graphsage_{edge}[_blind].csv)
   -> experiments/diagnose_fairness.py                      (reads every prediction dump ->
-                                           outputs/fairness_{group_metrics,gaps,model_contrasts}.csv)
+                                           outputs/fairness_{group_metrics,gaps,model_contrasts,gaps_standardized}.csv)
      experiments/edge_homophily.py                   (reads edges_*.npy + sens__* ->
                                            outputs/edge_homophily.csv)
   -> (removed: mitigate_threshold.py)   (read every dump -> results.csv family=mitigate_threshold)
@@ -525,7 +622,21 @@ gaps (max−min TPR and FPR), and — as the reference the other two are read
 against — `base_rate_gap`, the max−min of the *actual* clearance rate. The
 headline quantity is the **amplification ratio** = model gap ÷ base-rate gap:
 above 1 means the model widened a disparity that was already in the data,
-which is the diagnosis the project exists to make. Gaps are computed over
+which is the diagnosis the project exists to make.
+
+**All of those are *pooled* gaps, and at national scale that is not a neutral choice** —
+they mix group composition with regional effects, which is what the sex-amplification
+confound above turned out to be. `standardized_gap_row` therefore reports the same gaps
+under **direct standardization** by `State`: rates within a stratum, averaged by stratum
+weight, then max−min across groups. It reuses the pooled cell machinery (`_rates`, the
+per-stratum multinomial bootstrap) precisely so the two numbers cannot come to mean
+different things. Two rules: only strata where **every** compared group clears
+`--stratum_min_n` are used (otherwise a stratum contributes differently per group and
+"standardized to one population" breaks), and per-metric weights are renormalized over
+strata where the rate is defined (a stratum with no negatives has no FPR; summing the NaN
+would wipe the metric and zeroing it would invent an observation).
+
+Gaps are computed over
 named groups only (`Unknown` excluded — it's a recording artifact, not a
 population), and always at **two group floors** (all named groups, and
 n ≥ `config.FAIRNESS_MIN_GROUP_N`) because on this sample the race max and min
@@ -708,6 +819,12 @@ sex, which makes it a perfect proxy by construction and a standing warning
 against `--edge_type weapon`; `temporal` is ~0 on both (a useful null
 control); `geo` is race-assortative (0.174, neighbour-majority recovers race
 +7.8pp over the majority baseline) but **not** sex-assortative (0.019, +0.0pp).
+**At national scope `geo`'s race assortativity *rises* to 0.2308 and the recovery
+lift to +18.9pp** (`temporal` stays ~0 at 0.0033, `weapon` stays 1.000): the same
+county blocking spans the whole country's segregation range instead of three
+states', so the proxy path this project diagnosed gets *stronger* with scale, not
+weaker. Pre-registered consequence — the national blind `geo` run should amplify
+*above* the three-state 1.48.
 Read against the sighted-model diagnosis alone this looks *backwards* — the
 significant GraphSAGE-over-XGBoost amplification was on *sex* (where geo
 carries no signal) and unresolvable on *race* (where it does). The confound
@@ -768,6 +885,132 @@ baseline"**. Discrimination, investigative resourcing, urbanicity, and recording
 are **not separable** in this design (`Agency Type` only partly proxies urbanicity).
 The z-vs-race correlation must not be read causally, and that sentence has to travel with
 any map built on this table.
+
+**The national run is done, and it reproduces the mechanism at scale.** 638,454 rows /
+51 states / 123 feature columns; `geo` gives exactly the 3,042 blocks the design doc
+predicted and 25.0M directed edges. Race assortativity *rises* with scale (0.174 →
+0.2308), and blind amplification rises with it — **1.805 [1.715, 1.904]** against the
+three-state mini-batch 1.26, the lower bound clear of that CI's upper bound. This was
+pre-registered before the run. The alpha re-search picks **α=100** on the pre-registered
+gate (FPR amplification CI upper bound ≤ 0.5): α=25 and α=50 have point estimates under
+0.5 but upper bounds of 0.572 and 0.539, so they fail; α=100 gives 0.261 [0.157, 0.367]
+for −0.0156 MCC. Every `detect_cold_blocks` / map artifact at national scope runs on
+`graphsage_fairloss_a100_mb`. Two things did *not* carry over: the alpha curve does not
+invert in 0..100 (three states inverted above 50 — the mini-batch effective range shifted
+down, 47 optimizer steps per epoch against one), and **sex amplification appeared not to
+collapse under blinding** (1.25 [1.17, 1.33] nationally vs 0.88–0.96 on three states)
+even though geo's sex assortativity stays low at 0.0336.
+
+**That last one was a confound, not a mechanism, and finding it changed how gaps are
+measured.** Five hypotheses were eliminated from existing dumps alone (no retraining):
+the denominator is unchanged (base-rate gap 0.0803 → 0.0826, so the *numerator* rose 33%);
+the operating point accounts for about a quarter (at matched predicted-positive rate the
+national gap is still +0.0254 larger); the feature-proxy channel did **not** strengthen
+(blind X → sex recovery AUC 0.6921 → 0.6975, and 0.6925 without the State dummies —
+whereas race goes 0.7001 → 0.7770, which is why race amplification *did* rise); edge
+homophily cannot be it because **in the blind condition neighbours carry no sex either**;
+and decisively, **scoring the national model on CA+TX+MI rows only gives 0.965**, the
+three-state value. It is between-state aggregation: `State` is not a sensitive attribute,
+so it stays in blind `X` as 51 dummies, and states differ in both clearance level and
+victim-sex composition. Signed decomposition — the model's gap draws **32% from
+between-state composition while the base-rate gap draws only 14%**, and the ratio keeps
+the asymmetry.
+
+So `clear.fairness` gained **direct standardization** (`standardized_gap_row`, wired as
+`diagnose_fairness --stratum State` → a fourth table `fairness_gaps_standardized.csv`).
+Sex goes 1.246 → **1.005 [0.925, 1.090]** nationally (three states 0.964 → 0.832), while
+**race survives: 1.805 → 1.558 [1.457, 1.674]** (three states 1.483 → 1.417, against blind
+XGBoost's 0.668 → 0.644). Sex disappears under standardization and race does not — so the
+"sex is the direct column, race is the graph" split needs no narrowing to three states;
+the confound correction strengthens it. It stays a **separate file**: adding columns to
+`fairness_gaps.csv` would change what the reports citing it point at, and adding rows would
+let anyone reading it unfiltered mix pooled with standardized. Standardization drops strata
+below the per-group floor (39/51 states for race, 44/51 for sex) and provides no *paired*
+model contrasts, so model comparisons still come from the pooled contrast table.
+
+**Consequence for the alpha gate, and it does not resolve by turning the knob further.**
+The gate used *pooled* FPR amplification; standardized, α=100 is **0.590 [0.456, 0.738]**
+rather than 0.261 [0.157, 0.367], and no alpha in the grid passes. The penalty is defined on
+the pooled gap, so it is not even monotone in the standardized metric (α=25/50/100 give
+0.639/0.701/0.590) — pressing harder is the wrong instrument, and α>100 is where three
+states documented optimization instability. The principled fix is a **stratified penalty**
+(`fairness_penalty` over within-stratum group variance), which is a new intervention needing
+its own pre-registration, not a re-tune. The bias direction is not adverse: α=100's
+within-state race gap is still negative, so `E_b` is overstated in high-Black-share counties
+and **`z ↔ black_share = +0.290` is a lower bound**.
+
+National cold blocks (test set, α=100, δ=+0.8170): 853 county blocks at n≥20, 38 cold /
+52 warm. Top: Fulton/Atlanta (SMR 1.55, z 15.66), Baltimore city, St. Louis city,
+Orleans, Richmond, DC, Wayne, Cook — far stronger face validity than three states could
+show. `z ↔ black_share` strengthens to **+0.381** (+0.546 at n≥100), cold blocks
+averaging 0.680 Black share against warm 0.233; still not exclusively a race story
+(2 of 38 cold counties are under 0.30). The §5-4-1 caveat is unchanged and travels with
+the map: the model has no county feature, so z carries the whole county effect and
+discrimination / resourcing / urbanicity / recording practice are not separable.
+
+**Cross-fitting doubled that coverage and cut the correlation, exactly as pre-registered.**
+`experiments/crossfit_predictions.py` gives every one of the 638,454 rows an out-of-fold
+p̂ — 5 folds, transductive (the graph stays whole; only the loss moves to the fold's learn
+nodes, which is the regime `clear.gnn` already runs), α=100/blind/minibatch held fixed,
+76 min. Blocks at n≥20 go 853 → **1,803** (28% → 59% of counties) and `z ↔ black_share`
+drops **+0.381 → +0.290 [+0.245, +0.331]**, CI excluding the old point estimate at all
+three floors. **The matched control is what makes that attributable to coverage**: three
+things moved at once (block set, split, 3-seed mean → 1 seed), so `crossfit_compare`
+recomputes the cv5 correlation on the *same 853 counties* — it lands at +0.413/+0.500/+0.556,
+i.e. the split/seed effect is ≈0 (CI covers 0 at n≥50 and n≥100) and the whole −0.11
+belongs to the 950 newly admitted small counties (median n=34, mean Black share 0.200,
+internal correlation only +0.158). So the claim is **limited, not withdrawn**: the
+association is clearly positive nationwide, but its strength scales with county size, and
++0.381 is a large-county-weighted estimate rather than a national average. Two by-products:
+warm blocks grew 5.3× against cold's 1.95× (power reveals "solves better than expected"
+counties faster), and fold MCC 0.2969 ± 0.0041 matches the test-split a100's 0.2979 — 14%
+more training nodes bought no accuracy, so learning is saturated at this sample size.
+
+Three plumbing facts follow from that dump being **full-sample rather than test-set**.
+`predictions.discover()` skips `_cv\d+$` labels **in auto-discovery only** (an all-rows dump
+makes no-arg `diagnose_fairness` fail `assert_same_test_set`, legitimately — model contrasts
+are only meaningful on a shared test set; `--models` still reads it). `detect_cold_blocks
+--out` keeps the cv5 table in its own file, because `cold_blocks.csv` is the test-split
+table the map and reports cite. And the fairness-penalty group set must be counted on the
+**canonical test split**, not on all rows: nationally Asian/PI is 2,940 in test but 9,890
+overall, so re-deriving it naively presses 3 groups instead of 2 and silently makes α=100 a
+different intervention. The verification gate also had to change — p̂ is deliberately
+uncalibrated (`pos_weight`), so out-of-fold clearance is checked against the test-split
+model's own 0.5328, never against the actual 0.7020.
+
+**`experiments/build_web_map.py` is the national deliverable** — one self-contained HTML,
+zero external requests, no chart library (a choropleth is fill on `<path>`; projection and
+simplification stay in Python). 3,090 counties / 50 states / 626 KB. Three details are
+load-bearing. The **sample-floor slider consumes three separate `detect_cold_blocks` runs**,
+because BH q-values depend on how many blocks were tested together — filtering one run by
+`n` would report wrong q's, and the effect is not even monotone (three states give 5 cold
+at n≥20 but 6 at n≥50). The **three-tier encoding is resolved to integer colour indices at
+build time**, so the browser never compares the flag strings that once read back from CSV
+as `NaN` and painted all 143 counties as signal. And **per-level payload carries only what
+changes** — `n`/`z`/`smr`/`black_share` are properties of a county, so shipping them once
+instead of three times took 729 KB (over budget) to 664 KB, with 1.5 km simplification
+closing to 626 KB. Verified without a browser by re-rendering the emitted paths and fills,
+`node --check`, and 13 data invariants; DOM behaviour is unverified.
+
+**Two national maps ship, and the cross-fit one is primary.** `map_national.html` is built
+from `cold_blocks_cv5.csv` (1,800 counties carry data at n≥20); `map_national_test.html` is
+the test-split reference, kept because it shares a split with `fairness_*.csv` and can be
+cited alongside them. The decision rests on the two tables agreeing on effect size while
+disagreeing on precision — Fulton SMR 1.55→1.49, Wayne 1.19→1.26, but |z| max 15.66→26.60 —
+so cross-fitting is the same answer measured better, and on the 4 cold counties visible
+*only* there (Lauderdale TN SMR 2.69, Greensville VA 2.98, Pulaski MO 2.06, Grenada MS 2.01):
+the strongest SMRs in the whole table, invisible on the test map because they are small. A
+map answering "who gets forgotten" must not structurally drop small counties. Cost of the
+choice: the primary map no longer shares a split with the fairness tables, and its z values
+are not comparable to the test map's, so **`--src` drives a mandatory caption** (`SPLIT_NOTES`)
+carrying both facts plus "do not compare colour intensity between the two maps". Both ship at
+1.5 km simplification deliberately — differing geometry between two maps a reader compares
+side by side would read as a data difference. The cross-fit map is 681 KB against the 650 KB
+budget; the excess is per-county payload for 2.1× the counties, not geometry, so simplifying
+harder would trade border fidelity for someone else's data. Note that several top
+cold counties are independent cities and are nearly invisible on a national choropleth —
+small in area, not weak in signal — so **hover and the table view are how this result is
+read**, and any static figure needs the ranked table beside it.
 
 **`experiments/map_figures.py` draws that table as a county choropleth** (`clear.counties`).
 `City` really is a county field here, so the choropleth — not a city dot map — is the
