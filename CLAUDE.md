@@ -80,11 +80,22 @@ python -m experiments.detect_cold_blocks --min_n 20 50 100   # re-runs the test 
                                     # (BH q depends on how many blocks were tested together,
                                     #  so this is NOT the same as filtering one run by n)
 python -m experiments.detect_cold_blocks --model graphsage_geo_blind --calibrate none   # diagnostic only, see below
+python -m experiments.detect_cold_blocks --out cold_blocks_cv5.csv   # separate file for a different split (cross-fitting)
+
+python -m experiments.crossfit_predictions --minibatch   # 5-fold out-of-fold p̂ for EVERY row
+                                    # -> predictions/national/graphsage_fairloss_a100_mb_cv5.csv (638,454 rows)
+                                    # ~76 min at national scope; alpha/blind/minibatch fixed to the a100 gate value
+python -m experiments.crossfit_compare    # -> outputs/national/crossfit_compare.csv (the §2-1 judgment)
 
 python -m experiments.build_web_map       # -> outputs[/{scope}]/web/map_{scope}.html
                                     # self-contained, zero external requests; needs the
                                     # three min_n levels above for the sample-floor slider
 python -m experiments.build_web_map --simplify_km 1.5   # payload knob (1.0km=468KB paths, 2.0km=399KB)
+# the two national maps. --src picks the split and drives the caption; --out must move with it.
+python -m experiments.build_web_map --src cold_blocks_cv5.csv --out map_national.html --simplify_km 1.5
+                                    # PRIMARY: cross-fit, 1,800 counties carry data
+python -m experiments.build_web_map --src cold_blocks.csv --out map_national_test.html --simplify_km 1.5
+                                    # reference: test split, 850 counties, same split as fairness_*.csv
 
 python -m experiments.map_figures         # -> outputs/map_fig{1,2}_*.png (county choropleth of the residuals + the race panel)
 python -m experiments.poster_figures      # -> outputs/poster_fig{1,2}_*.png (reads result CSVs only, no retraining)
@@ -882,6 +893,36 @@ averaging 0.680 Black share against warm 0.233; still not exclusively a race sto
 the map: the model has no county feature, so z carries the whole county effect and
 discrimination / resourcing / urbanicity / recording practice are not separable.
 
+**Cross-fitting doubled that coverage and cut the correlation, exactly as pre-registered.**
+`experiments/crossfit_predictions.py` gives every one of the 638,454 rows an out-of-fold
+p̂ — 5 folds, transductive (the graph stays whole; only the loss moves to the fold's learn
+nodes, which is the regime `clear.gnn` already runs), α=100/blind/minibatch held fixed,
+76 min. Blocks at n≥20 go 853 → **1,803** (28% → 59% of counties) and `z ↔ black_share`
+drops **+0.381 → +0.290 [+0.245, +0.331]**, CI excluding the old point estimate at all
+three floors. **The matched control is what makes that attributable to coverage**: three
+things moved at once (block set, split, 3-seed mean → 1 seed), so `crossfit_compare`
+recomputes the cv5 correlation on the *same 853 counties* — it lands at +0.413/+0.500/+0.556,
+i.e. the split/seed effect is ≈0 (CI covers 0 at n≥50 and n≥100) and the whole −0.11
+belongs to the 950 newly admitted small counties (median n=34, mean Black share 0.200,
+internal correlation only +0.158). So the claim is **limited, not withdrawn**: the
+association is clearly positive nationwide, but its strength scales with county size, and
++0.381 is a large-county-weighted estimate rather than a national average. Two by-products:
+warm blocks grew 5.3× against cold's 1.95× (power reveals "solves better than expected"
+counties faster), and fold MCC 0.2969 ± 0.0041 matches the test-split a100's 0.2979 — 14%
+more training nodes bought no accuracy, so learning is saturated at this sample size.
+
+Three plumbing facts follow from that dump being **full-sample rather than test-set**.
+`predictions.discover()` skips `_cv\d+$` labels **in auto-discovery only** (an all-rows dump
+makes no-arg `diagnose_fairness` fail `assert_same_test_set`, legitimately — model contrasts
+are only meaningful on a shared test set; `--models` still reads it). `detect_cold_blocks
+--out` keeps the cv5 table in its own file, because `cold_blocks.csv` is the test-split
+table the map and reports cite. And the fairness-penalty group set must be counted on the
+**canonical test split**, not on all rows: nationally Asian/PI is 2,940 in test but 9,890
+overall, so re-deriving it naively presses 3 groups instead of 2 and silently makes α=100 a
+different intervention. The verification gate also had to change — p̂ is deliberately
+uncalibrated (`pos_weight`), so out-of-fold clearance is checked against the test-split
+model's own 0.5328, never against the actual 0.7020.
+
 **`experiments/build_web_map.py` is the national deliverable** — one self-contained HTML,
 zero external requests, no chart library (a choropleth is fill on `<path>`; projection and
 simplification stay in Python). 3,090 counties / 50 states / 626 KB. Three details are
@@ -894,7 +935,24 @@ as `NaN` and painted all 143 counties as signal. And **per-level payload carries
 changes** — `n`/`z`/`smr`/`black_share` are properties of a county, so shipping them once
 instead of three times took 729 KB (over budget) to 664 KB, with 1.5 km simplification
 closing to 626 KB. Verified without a browser by re-rendering the emitted paths and fills,
-`node --check`, and 13 data invariants; DOM behaviour is unverified. Note that several top
+`node --check`, and 13 data invariants; DOM behaviour is unverified.
+
+**Two national maps ship, and the cross-fit one is primary.** `map_national.html` is built
+from `cold_blocks_cv5.csv` (1,800 counties carry data at n≥20); `map_national_test.html` is
+the test-split reference, kept because it shares a split with `fairness_*.csv` and can be
+cited alongside them. The decision rests on the two tables agreeing on effect size while
+disagreeing on precision — Fulton SMR 1.55→1.49, Wayne 1.19→1.26, but |z| max 15.66→26.60 —
+so cross-fitting is the same answer measured better, and on the 4 cold counties visible
+*only* there (Lauderdale TN SMR 2.69, Greensville VA 2.98, Pulaski MO 2.06, Grenada MS 2.01):
+the strongest SMRs in the whole table, invisible on the test map because they are small. A
+map answering "who gets forgotten" must not structurally drop small counties. Cost of the
+choice: the primary map no longer shares a split with the fairness tables, and its z values
+are not comparable to the test map's, so **`--src` drives a mandatory caption** (`SPLIT_NOTES`)
+carrying both facts plus "do not compare colour intensity between the two maps". Both ship at
+1.5 km simplification deliberately — differing geometry between two maps a reader compares
+side by side would read as a data difference. The cross-fit map is 681 KB against the 650 KB
+budget; the excess is per-county payload for 2.1× the counties, not geometry, so simplifying
+harder would trade border fidelity for someone else's data. Note that several top
 cold counties are independent cities and are nearly invisible on a national choropleth —
 small in area, not weak in signal — so **hover and the table view are how this result is
 read**, and any static figure needs the ranked table beside it.
