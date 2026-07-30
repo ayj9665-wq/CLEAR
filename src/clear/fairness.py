@@ -41,6 +41,36 @@ n x B개의 인덱스를 뽑을 필요 없이 그룹당 (B,4) 행렬 하나면 �
 **위쪽으로 편향**된다. 그룹이 작을수록 심하고, 부트스트랩 백분위 CI는 이 편향을
 없애주지 않는다(구간 폭만 알려준다). 그래서 격차는 항상 명명된 전체 그룹과
 n>=FAIRNESS_MIN_GROUP_N 두 벌로 낸다 — 후자가 편향이 덜한 쪽이다.
+
+**두 번째 한계, 그리고 그것이 층 표준화를 부른 이유.** 위의 격차는 전부 **pooled**
+격차다 — 표본 전체에서 그룹별 비율을 하나씩 내고 그 차를 본다. 표본이 지리적으로
+이질적이면 이 값에 **그룹 구성과 지역 효과의 교란**이 섞인다. 주(州)마다 검거율
+수준과 피해자 성별·인종 구성이 다르고, 모델은 State를 (민감속성이 아니므로) blind
+조건에서도 특성으로 갖는다. 그러면 모델이 주별 검거율을 옳게 예측하는 것만으로
+그룹 대비에 주 효과가 실린다.
+
+실측하면 크기가 작지 않다. 전국 blind geo, 성별:
+
+    pooled       선택률격차 +0.1015 / 기준격차 +0.0797 -> 증폭비 1.273
+    주내부 가중  선택률격차 +0.0694 / 기준격차 +0.0682 -> 증폭비 1.018
+
+모델 격차는 32%를 주간 구성에서 얻는데 기준격차는 14%만 얻으므로, 비율인 증폭비에
+그 비대칭이 그대로 남는다. **전국 성별 증폭비가 blind에서 붕괴하지 않는다고 기록된
+1.25는 기제가 아니라 이 교란이었다** — 3개 주에서는 구성 몫이 17%뿐이어서 보이지
+않았고(그래서 3개 주의 "성별은 전적으로 직접 특성" 결론 자체는 옳다), 전국으로
+확장하면서 드러났다.
+
+같은 검정에서 **인종 증폭비는 살아남는다**(1.805 -> 1.558). 그 대비가 이 프로젝트의
+기제 주장을 오히려 강화한다 — 성별은 표준화하면 사라지고 인종은 남는다.
+
+그래서 `standardized_gap_row`가 **직접 표준화**(direct standardization) 격차를 낸다:
+층 안에서 그룹 비율을 내고, 층 가중치로 평균한 뒤 그룹 간 max-min을 본다. pooled
+격차를 대체하지 않고 **나란히** 낸다 — 어느 쪽도 단독으로는 불충분하다(pooled는
+교란되고, 표준화는 층 하한 때문에 표본 일부를 버린다).
+
+주의: 지도(`detect_cold_blocks`)는 이 문제를 이미 다루고 있었다 — z가 표준화 잔차이고
+State가 모델 입력에 있으므로 주별 기준선이 기대값에 빠진다. 공정성 진단에만 같은
+표준화가 없었다.
 """
 import itertools
 
@@ -199,6 +229,125 @@ def gap_row(stats, pt, groups, label):
             row[f"{m}_min_group"] = groups[int(np.nanargmin(vals))]
         amp_pt, amp_bt = stats[f"{m}_amplification"]
         row[f"{m}_amplification"] = amp_pt
+        row[f"{m}_amplification_lo"], row[f"{m}_amplification_hi"] = _ci(amp_bt)
+    return row
+
+
+# ---- 층 표준화 격차 (직접 표준화) ----
+#
+# pooled 격차와 **같은 칸 기계**를 쓴다(_rates / multinomial 부트스트랩). 다른 것은
+# 카운트가 그룹당 (4,)가 아니라 (층, 4)이고, 비율을 층 가중치로 평균한 뒤 max-min을
+# 본다는 점뿐이다. 정의를 공유하는 것이 요점이다 -- 표준화 격차가 다른 코드 경로에서
+# 나오면 두 수치가 조용히 다른 뜻을 갖게 된다.
+
+def strat_counts(df, attr, stratum_col, y_col="y_true", pred_col="pred"):
+    """(그룹 -> (S,4) 카운트, 층 라벨 리스트). 층 순서는 모든 그룹에 공통이다.
+
+    칸 번호는 pooled 쪽과 같은 2*y+pred 규약이다.
+    """
+    strata = pd.Index(pd.unique(df[stratum_col].values)).sort_values()
+    s_idx = pd.Index(strata).get_indexer(df[stratum_col].values)
+    cell = (2 * df[y_col].values.astype(np.int64)
+            + df[pred_col].values.astype(np.int64))
+    flat = s_idx * 4 + cell
+    g = df[attr].values
+    counts = {grp: np.bincount(flat[g == grp], minlength=len(strata) * 4)
+                     .reshape(len(strata), 4)
+              for grp in pd.unique(g)}
+    return counts, list(strata)
+
+
+def usable_strata(counts, groups, min_n):
+    """표준화에 쓸 층의 boolean 마스크 + 층 가중치.
+
+    **모든 비교 그룹이 min_n 이상인 층만** 쓴다. 한 그룹이라도 비어 있는 층을 넣으면
+    그 층의 기여가 그룹마다 달라져 "같은 인구에 표준화한다"는 전제가 깨진다.
+    가중치는 남은 층에서 비교 그룹들의 합산 n으로 매긴다(= 표준화 대상 인구).
+    """
+    stacked = np.stack([counts[g].sum(axis=1) for g in groups])   # (G, S)
+    keep = (stacked >= min_n).all(axis=0)
+    w = stacked[:, keep].sum(axis=0).astype(float)
+    return keep, (w / w.sum() if w.sum() > 0 else w)
+
+
+def _std_rates(c, w):
+    """(...,S,4) 카운트 + 층 가중치 -> 지표별 직접표준화 비율(스칼라 또는 (B,)).
+
+    층별 비율이 nan인 경우(그 층에 양성/음성이 아예 없어 tpr/fpr이 정의되지 않는
+    경우)는 **그 지표에 대해서만** 가중치를 재정규화한다. nan을 그대로 더하면 지표
+    하나 때문에 전체가 nan이 되고, 0으로 치면 있지도 않은 0을 관측한 것이 된다.
+    재정규화는 지표별로 표준화 인구가 조금 달라진다는 뜻이므로 여기 적어 둔다.
+    """
+    r = _rates(c)
+    out = {}
+    for m, v in r.items():
+        ok = np.isfinite(v)
+        wv = np.where(ok, w, 0.0)
+        tot = wv.sum(axis=-1, keepdims=True)
+        num = np.nansum(np.where(ok, v, 0.0) * wv, axis=-1)
+        out[m] = np.divide(num, tot[..., 0],
+                           out=np.full(np.shape(num), np.nan, dtype=float),
+                           where=(tot[..., 0] > 0))
+    return out
+
+
+def standardized_gap_row(df, attr, groups, stratum_col, label, *,
+                         min_stratum_n=100, n_boot=None, seed=None):
+    """한 덤프·한 그룹집합의 **층 표준화** 격차 한 행. 층이 2개 미만이면 None.
+
+    반환 형식은 gap_row와 같은 열 이름을 쓰되 층 정보(n_strata, n_used)를 더한다 —
+    같은 이름이어야 pooled 표와 나란히 붙여 읽을 수 있다.
+
+    CI는 (층, 그룹)마다 4칸 multinomial을 뽑아 낸다. pooled 쪽과 같은 원리이지만
+    **모델 간 짝짓기는 하지 않는다** — 이 표는 "표준화 후에도 증폭비가 1을 넘는가"를
+    묻는 용도이고, 모델 대조는 pooled 대조표(fairness_model_contrasts.csv)가 담당한다.
+    """
+    n_boot = C.FAIRNESS_BOOTSTRAP_N if n_boot is None else n_boot
+    seed = C.RANDOM_STATE if seed is None else seed
+    counts, strata = strat_counts(df, attr, stratum_col)
+    groups = [g for g in groups if g in counts]
+    if len(groups) < 2:
+        return None
+    keep, w = usable_strata(counts, groups, min_stratum_n)
+    if keep.sum() < 2:
+        return None
+
+    rng = np.random.default_rng(seed)
+    pt, bt = {}, {}
+    for g in groups:
+        c = counts[g][keep]                                  # (S,4)
+        pt[g] = _std_rates(c, w)
+        n = c.sum(axis=1)
+        p = np.divide(c, n[:, None], out=np.zeros_like(c, dtype=float),
+                      where=(n[:, None] > 0))
+        # 층마다 독립 multinomial -> (B,S,4). 층 안 복원추출이므로 pooled 설계와 동일.
+        draws = np.stack([rng.multinomial(int(n[s]), p[s], size=n_boot)
+                          if n[s] > 0 else np.zeros((n_boot, 4), dtype=np.int64)
+                          for s in range(c.shape[0])], axis=1)
+        bt[g] = _std_rates(draws, w)
+
+    span_pt = lambda m: _span([pt[g][m] for g in groups])
+    span_bt = lambda m: _span(np.stack([bt[g][m] for g in groups]))
+    base_pt, base_bt = span_pt("base_rate"), span_bt("base_rate")
+
+    row = {"group_set": label, "n_groups": len(groups),
+           "groups": " | ".join(map(str, groups)),
+           "stratum": stratum_col, "n_strata": len(strata),
+           "n_strata_used": int(keep.sum()), "min_stratum_n": min_stratum_n,
+           "n_standardized": int(sum(counts[g][keep].sum() for g in groups)),
+           "base_rate_gap": base_pt}
+    row["base_rate_gap_lo"], row["base_rate_gap_hi"] = _ci(base_bt)
+    for m in GAP_METRICS:
+        g_pt, g_bt = span_pt(m), span_bt(m)
+        row[f"{m}_gap"] = g_pt
+        row[f"{m}_gap_lo"], row[f"{m}_gap_hi"] = _ci(g_bt)
+        vals = [pt[g][m] for g in groups]
+        if not np.all(np.isnan(vals)):
+            row[f"{m}_max_group"] = groups[int(np.nanargmax(vals))]
+            row[f"{m}_min_group"] = groups[int(np.nanargmin(vals))]
+        row[f"{m}_amplification"] = (g_pt / base_pt) if base_pt > 0 else np.nan
+        amp_bt = np.divide(g_bt, base_bt, out=np.full_like(g_bt, np.nan),
+                           where=(base_bt > 1e-9))
         row[f"{m}_amplification_lo"], row[f"{m}_amplification_hi"] = _ci(amp_bt)
     return row
 

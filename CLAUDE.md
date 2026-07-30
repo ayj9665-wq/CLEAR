@@ -62,6 +62,10 @@ python -m experiments.train_gnn --blind        # race/sex/ethnicity dummies drop
 python -m experiments.diagnose_fairness   # diagnoses EVERY dump in outputs/predictions/ -> fairness_{group_metrics,gaps,model_contrasts}.csv
 python -m experiments.diagnose_fairness --models graphsage_geo xgboost   # restrict to specific dumps
 python -m experiments.diagnose_fairness --min_n 5000 --n_boot 2000       # stricter group floor / more bootstrap reps
+python -m experiments.diagnose_fairness --stratum State --stratum_min_n 100
+                                          # also writes fairness_gaps_standardized.csv (default;
+                                          # --stratum none skips). Pooled gaps carry a
+                                          # region-composition confound — see below.
 python -m experiments.edge_homophily      # -> outputs/edge_homophily.csv (are edges a sensitive-attribute proxy?)
 python -m experiments.edge_relatedness    # -> outputs/edge_relatedness.csv (do edges link genuinely related cases?)
 python -m experiments.edge_relatedness --no_oracle                  # skip the O(n^2)-per-block oracle
@@ -618,7 +622,21 @@ gaps (max−min TPR and FPR), and — as the reference the other two are read
 against — `base_rate_gap`, the max−min of the *actual* clearance rate. The
 headline quantity is the **amplification ratio** = model gap ÷ base-rate gap:
 above 1 means the model widened a disparity that was already in the data,
-which is the diagnosis the project exists to make. Gaps are computed over
+which is the diagnosis the project exists to make.
+
+**All of those are *pooled* gaps, and at national scale that is not a neutral choice** —
+they mix group composition with regional effects, which is what the sex-amplification
+confound above turned out to be. `standardized_gap_row` therefore reports the same gaps
+under **direct standardization** by `State`: rates within a stratum, averaged by stratum
+weight, then max−min across groups. It reuses the pooled cell machinery (`_rates`, the
+per-stratum multinomial bootstrap) precisely so the two numbers cannot come to mean
+different things. Two rules: only strata where **every** compared group clears
+`--stratum_min_n` are used (otherwise a stratum contributes differently per group and
+"standardized to one population" breaks), and per-metric weights are renormalized over
+strata where the rate is defined (a stratum with no negatives has no FPR; summing the NaN
+would wipe the metric and zeroing it would invent an observation).
+
+Gaps are computed over
 named groups only (`Unknown` excluded — it's a recording artifact, not a
 population), and always at **two group floors** (all named groups, and
 n ≥ `config.FAIRNESS_MIN_GROUP_N`) because on this sample the race max and min
@@ -879,10 +897,47 @@ gate (FPR amplification CI upper bound ≤ 0.5): α=25 and α=50 have point esti
 for −0.0156 MCC. Every `detect_cold_blocks` / map artifact at national scope runs on
 `graphsage_fairloss_a100_mb`. Two things did *not* carry over: the alpha curve does not
 invert in 0..100 (three states inverted above 50 — the mini-batch effective range shifted
-down, 47 optimizer steps per epoch against one), and **sex amplification no longer
-collapses under blinding** (1.25 [1.17, 1.33] nationally vs 0.88–0.96 on three states)
-even though geo's sex assortativity stays low at 0.0336 — graph homophily does not
-explain that residual, and it is recorded as an open observation, not explained away.
+down, 47 optimizer steps per epoch against one), and **sex amplification appeared not to
+collapse under blinding** (1.25 [1.17, 1.33] nationally vs 0.88–0.96 on three states)
+even though geo's sex assortativity stays low at 0.0336.
+
+**That last one was a confound, not a mechanism, and finding it changed how gaps are
+measured.** Five hypotheses were eliminated from existing dumps alone (no retraining):
+the denominator is unchanged (base-rate gap 0.0803 → 0.0826, so the *numerator* rose 33%);
+the operating point accounts for about a quarter (at matched predicted-positive rate the
+national gap is still +0.0254 larger); the feature-proxy channel did **not** strengthen
+(blind X → sex recovery AUC 0.6921 → 0.6975, and 0.6925 without the State dummies —
+whereas race goes 0.7001 → 0.7770, which is why race amplification *did* rise); edge
+homophily cannot be it because **in the blind condition neighbours carry no sex either**;
+and decisively, **scoring the national model on CA+TX+MI rows only gives 0.965**, the
+three-state value. It is between-state aggregation: `State` is not a sensitive attribute,
+so it stays in blind `X` as 51 dummies, and states differ in both clearance level and
+victim-sex composition. Signed decomposition — the model's gap draws **32% from
+between-state composition while the base-rate gap draws only 14%**, and the ratio keeps
+the asymmetry.
+
+So `clear.fairness` gained **direct standardization** (`standardized_gap_row`, wired as
+`diagnose_fairness --stratum State` → a fourth table `fairness_gaps_standardized.csv`).
+Sex goes 1.246 → **1.005 [0.925, 1.090]** nationally (three states 0.964 → 0.832), while
+**race survives: 1.805 → 1.558 [1.457, 1.674]** (three states 1.483 → 1.417, against blind
+XGBoost's 0.668 → 0.644). Sex disappears under standardization and race does not — so the
+"sex is the direct column, race is the graph" split needs no narrowing to three states;
+the confound correction strengthens it. It stays a **separate file**: adding columns to
+`fairness_gaps.csv` would change what the reports citing it point at, and adding rows would
+let anyone reading it unfiltered mix pooled with standardized. Standardization drops strata
+below the per-group floor (39/51 states for race, 44/51 for sex) and provides no *paired*
+model contrasts, so model comparisons still come from the pooled contrast table.
+
+**Consequence for the alpha gate, and it does not resolve by turning the knob further.**
+The gate used *pooled* FPR amplification; standardized, α=100 is **0.590 [0.456, 0.738]**
+rather than 0.261 [0.157, 0.367], and no alpha in the grid passes. The penalty is defined on
+the pooled gap, so it is not even monotone in the standardized metric (α=25/50/100 give
+0.639/0.701/0.590) — pressing harder is the wrong instrument, and α>100 is where three
+states documented optimization instability. The principled fix is a **stratified penalty**
+(`fairness_penalty` over within-stratum group variance), which is a new intervention needing
+its own pre-registration, not a re-tune. The bias direction is not adverse: α=100's
+within-state race gap is still negative, so `E_b` is overstated in high-Black-share counties
+and **`z ↔ black_share = +0.290` is a lower bound**.
 
 National cold blocks (test set, α=100, δ=+0.8170): 853 county blocks at n≥20, 38 cold /
 52 warm. Top: Fulton/Atlanta (SMR 1.55, z 15.66), Baltimore city, St. Louis city,

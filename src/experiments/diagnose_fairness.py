@@ -15,6 +15,13 @@ clear.fairness에 있고(08 완화 단계가 같은 정의로 재계산해야 �
   outputs/fairness_group_metrics.csv    그룹별 지표(+ CI) — 그림용 long 포맷
   outputs/fairness_gaps.csv             (model x attribute x group_set)당 격차·증폭비·CI
   outputs/fairness_model_contrasts.csv  모델 쌍의 격차 차이 + CI(짝지은 부트스트랩)
+  outputs/fairness_gaps_standardized.csv  같은 격차를 **주(州)로 층 표준화**한 값
+
+네 번째 표가 왜 필요한지는 clear.fairness의 docstring에 있다. 요지: pooled 격차는
+지역 구성과 그룹 구성의 교란을 담고, 그 크기가 작지 않다 — 전국 blind 성별 증폭비
+1.25는 표준화하면 **1.02**로, 기제가 아니라 주간 구성 효과였다. 같은 검정에서 인종은
+1.805 -> 1.558로 **살아남는다.** 두 표를 나란히 읽어야 한다(표준화는 층 하한 때문에
+표본 일부를 버리는 다른 추정량이다).
 
 모델 비교는 **반드시** 대조표로 읽는다. 세 모델이 같은 test 행을 쓰므로 개별
 모델의 CI가 겹치는지로 차이를 판정하면 틀린다 — 겹치는 독립 CI는 유의한 차이와
@@ -52,6 +59,15 @@ def main():
                          "명명된 전체 그룹 집합은 항상 함께 낸다.")
     ap.add_argument("--n_boot", type=int, default=C.FAIRNESS_BOOTSTRAP_N,
                     help="부트스트랩 반복수(0이면 CI 없이 점추정만)")
+    ap.add_argument("--stratum", default="State",
+                    help="층 표준화에 쓸 sample.parquet의 열(기본 State). "
+                         "pooled 격차는 지역 구성과 그룹 구성의 교란을 담으므로 "
+                         "**표준화 격차를 나란히** 낸다(clear.fairness 참고). "
+                         "none이면 표준화를 건너뛴다.")
+    ap.add_argument("--stratum_min_n", type=int, default=100,
+                    help="층 하나를 표준화에 쓰기 위해 **모든 비교 그룹**이 가져야 하는 "
+                         "최소 표본. 한 그룹이라도 비면 그 층의 기여가 그룹마다 달라져 "
+                         "'같은 인구에 표준화한다'는 전제가 깨진다.")
     args = ap.parse_args()
 
     paths = predictions.discover(args.models)
@@ -67,7 +83,18 @@ def main():
         print(f"  {label:16s} 예측 검거율 {df['pred'].mean():.1%} "
               f"(실제 {df['y_true'].mean():.1%})")
 
-    all_groups, all_gaps, all_contrasts = [], [], []
+    # 층 라벨은 예측 덤프에 없다(row_index가 sample.parquet 행 위치라 join한다 —
+    # detect_cold_blocks와 같은 규약). 덤프마다 같은 test 행이므로 한 번 붙이면 된다.
+    strata = None
+    if args.stratum.lower() != "none":
+        sample = pd.read_parquet(C.SCOPE_DIR / "sample.parquet")
+        if args.stratum not in sample.columns:
+            sys.exit(f"[에러] sample.parquet에 '{args.stratum}' 열 없음")
+        strata = sample[args.stratum].values[test_idx]
+        print(f"[strat] 층 = {args.stratum} ({pd.Series(strata).nunique()}개), "
+              f"층당 그룹 최소 {args.stratum_min_n}")
+
+    all_groups, all_gaps, all_contrasts, all_std = [], [], [], []
     for attr in SENS_ATTRS:
         missing = [l for l, df in dumps.items() if attr not in df.columns]
         if missing:
@@ -95,6 +122,36 @@ def main():
                       f"데이터 {r['base_rate_gap']:.3f}  "
                       f"-> 증폭비 {amp[0]:.2f}배 [{amp[1]:.2f}, {amp[2]:.2f}]")
 
+        # 층 표준화: pooled 격차에 섞인 지역 구성 교란을 뺀 값. pooled를 대체하지
+        # 않고 나란히 낸다 -- 표준화는 층 하한 때문에 표본 일부를 버리므로 어느 쪽도
+        # 단독으로는 불충분하다.
+        if strata is not None:
+            std_rows = []
+            for label, df in dumps.items():
+                d = df.assign(**{args.stratum: strata})
+                for _, r in gaps[gaps["model"] == label].iterrows():
+                    grp = [g for g in str(r["groups"]).split(" | ") if g]
+                    sr = fairness.standardized_gap_row(
+                        d, attr, grp, args.stratum, r["group_set"],
+                        min_stratum_n=args.stratum_min_n, n_boot=args.n_boot)
+                    if sr is not None:
+                        std_rows.append({"attribute": name, "model": label, **sr})
+            if std_rows:
+                std = pd.DataFrame(std_rows)
+                all_std.append(std)
+                print(f"\n  -- 층 표준화({args.stratum}) 후 증폭비 --")
+                for _, r in std.iterrows():
+                    pooled = gaps[(gaps["model"] == r["model"])
+                                  & (gaps["group_set"] == r["group_set"])]
+                    p = float(pooled["selection_rate_amplification"].iloc[0])
+                    print(f"  [{r['group_set']}] {r['model']:26s} "
+                          f"pooled {p:5.3f} -> 표준화 "
+                          f"{r['selection_rate_amplification']:5.3f} "
+                          f"[{r['selection_rate_amplification_lo']:.3f}, "
+                          f"{r['selection_rate_amplification_hi']:.3f}]  "
+                          f"(층 {r['n_strata_used']}/{r['n_strata']}, "
+                          f"{r['n_standardized']:,}행)")
+
         # 모델 대조: 개별 CI 겹침이 아니라 짝지은 차이로 판정한다.
         dp = contrasts[(contrasts["metric"] == "selection_rate")
                        & (contrasts["quantity"] == "amplification")]
@@ -110,6 +167,11 @@ def main():
         (C.scoped_output("fairness_gaps.csv"), all_gaps),
         (C.scoped_output("fairness_model_contrasts.csv"), all_contrasts),
     ]
+    # 별도 파일이다. fairness_gaps.csv에 열을 더하면 그 표를 인용한 보고서들이
+    # 가리키는 수치의 뜻이 바뀌고, 행을 더하면 필터 없이 읽는 쪽이 pooled와 표준화를
+    # 섞어 센다. 표준화는 표본 일부를 버리는 **다른 추정량**이라 파일을 나눈다.
+    if all_std:
+        paths_out.append((C.scoped_output("fairness_gaps_standardized.csv"), all_std))
     print()
     for p, frames in paths_out:
         pd.concat(frames, ignore_index=True).to_csv(p, index=False, encoding="utf-8-sig")
