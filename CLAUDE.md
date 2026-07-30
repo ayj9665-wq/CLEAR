@@ -59,7 +59,7 @@ python -m experiments.train_gnn --edge_type geo --blind --minibatch --tag blind_
 python -m experiments.train_gnn --edge_type geo_temporal                        # union of geo+temporal edges
 python -m experiments.train_gnn --blind        # race/sex/ethnicity dummies dropped from X (graph unchanged)
 
-python -m experiments.diagnose_fairness   # diagnoses EVERY dump in outputs/predictions/ -> fairness_{group_metrics,gaps,model_contrasts}.csv
+python -m experiments.diagnose_fairness   # diagnoses EVERY dump in outputs/predictions/ -> fairness_{group_metrics,gaps,model_contrasts,gaps_standardized}.csv
 python -m experiments.diagnose_fairness --models graphsage_geo xgboost   # restrict to specific dumps
 python -m experiments.diagnose_fairness --min_n 5000 --n_boot 2000       # stricter group floor / more bootstrap reps
 python -m experiments.diagnose_fairness --stratum State --stratum_min_n 100
@@ -273,7 +273,7 @@ dataset/kaggle_homicide_Reports_1980_2014.csv  (not in git, ~638k rows)
   -> experiments/train_gnn.py                     (reads features.parquet + edges_*.npy ->
                                            outputs/predictions/graphsage_{edge}[_blind].csv)
   -> experiments/diagnose_fairness.py                      (reads every prediction dump ->
-                                           outputs/fairness_{group_metrics,gaps,model_contrasts}.csv)
+                                           outputs/fairness_{group_metrics,gaps,model_contrasts,gaps_standardized}.csv)
      experiments/edge_homophily.py                   (reads edges_*.npy + sens__* ->
                                            outputs/edge_homophily.csv)
   -> (removed: mitigate_threshold.py)   (read every dump -> results.csv family=mitigate_threshold)
