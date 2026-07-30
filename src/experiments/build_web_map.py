@@ -40,6 +40,7 @@ cold_blocks.csv의 min_n 열에 여러 수준이 있기를 요구한다:
 """
 import argparse
 import json
+import re
 
 import numpy as np
 import pandas as pd
@@ -73,14 +74,37 @@ CAVEATS = [
      "결과다(BH FDR의 q값이 검정 개수에 의존하므로 단순 필터와 다르다)."),
 ]
 
+# 어느 분할에서 나온 지도인지는 **캡션에 반드시 있어야 한다.** 두 지도가 나란히
+# 배포되는데 z의 스케일이 분할마다 다르기 때문이다 -- 같은 카운티가 크로스피팅 지도에서
+# 더 진하게 보이는 것은 신호가 커진 것이 아니라 표본이 커진 것이다(|z| 최대 15.66 대
+# 26.60). 그 경고 없이 두 장을 비교하면 데이터가 달라진 것으로 읽힌다.
+SPLIT_NOTES = {
+    "crossfit": (
+        "예측은 <b>5-fold cross-fitting</b>의 out-of-fold 값이다.",
+        "전체 638,454행에 학습에 쓰이지 않은 예측이 있으므로 카운티 1,803개(57%)가 "
+        "판정된다 -- test 분할 지도의 853개(27%)보다 2.1배다. 대신 이 지도는 공정성 "
+        "지표 표(<code>fairness_*.csv</code>)와 <b>다른 분할</b> 위에 있고, 표본이 "
+        "3.4배라 z가 전반적으로 크다. <b>두 지도의 색 강도를 비교하지 말 것</b> — "
+        "SMR(이상성의 크기)은 두 분할에서 거의 같고 달라지는 것은 확신도다."),
+    "test": (
+        "예측은 <b>test 분할</b>(층화 무작위 30%)의 값이다.",
+        "공정성 지표 표와 같은 분할이라 나란히 인용할 수 있다. 대신 판정되는 카운티가 "
+        "853개(27%)뿐이고, 빗금은 작은 카운티에 몰려 있다 — 전수 판정본은 "
+        "cross-fitting 지도다."),
+}
+
 # 알래스카만 축척이 다르다(0.35배). 하와이는 CONUS와 같은 축척이라 면적 비교가 성립한다.
 PROJECTION_NOTE = ("투영은 Albers 등적(equal-area). 알래스카는 지면에 담기 위해 "
                    "<b>0.35배로 축소</b>했으므로 알래스카 카운티의 화면 면적을 "
                    "본토와 비교하면 안 된다. 하와이는 본토와 같은 축척이다.")
 
 
-def load_blocks(block_key):
-    path = C.scoped_output("cold_blocks.csv")
+def load_blocks(block_key, src="cold_blocks.csv"):
+    """블록 표를 읽는다. src를 바꾸면 **다른 분할**의 표로 지도를 그릴 수 있다 --
+    크로스피팅 표(cold_blocks_cv5.csv)가 그 경우다. 두 분할은 파일이 갈려 있고
+    (detect_cold_blocks --out) 지도도 --out으로 갈라 두어야 한다. 같은 파일에 섞으면
+    어느 카운티가 어느 분할에서 판정된 것인지 지도 위에서 알 수 없다."""
+    path = C.scoped_output(src)
     if not path.exists():
         raise SystemExit(f"[에러] {path} 없음. 먼저: "
                          f"python -m experiments.detect_cold_blocks --min_n 20 50 100")
@@ -359,9 +383,13 @@ def main():
     # 알 수 없다 -- 실제로 3개 주 지도를 열고 "주가 3개뿐"이라고 읽는 일이 생겼다.
     ap.add_argument("--out", default=None,
                     help="출력 파일명(기본: map_{scope}.html)")
+    ap.add_argument("--src", default="cold_blocks.csv",
+                    help="블록 표 파일명. 크로스피팅 표(cold_blocks_cv5.csv)로 그리면 "
+                         "카운티 커버리지가 853 -> 1,803개가 된다. **--out도 함께 "
+                         "바꿔야** 기존 지도를 덮어쓰지 않는다.")
     args = ap.parse_args()
 
-    tab = load_blocks(args.block_key)
+    tab = load_blocks(args.block_key, args.src)
     tab, missing = CT.join_fips(tab)
     matched = tab["fips"].notna()
     print(f"[join] FIPS {int(matched.sum())}/{len(tab)} ({matched.mean()*100:.1f}%)")
@@ -381,6 +409,8 @@ def main():
     sig = {m: sum(1 for s in per[m]["s"] if s == 2) for m in levels}
     print(f"[level] 판정 {assessed} / 유의 {sig}  (|z| 스케일 상한 {vmax:.2f})")
 
+    # 분할은 --src에서 읽는다(파일명이 곧 분할이다 — detect_cold_blocks --out 규약).
+    split = "crossfit" if re.search(r"_cv\d+", args.src) else "test"
     n_states = tab["fips"].str[:2].nunique()
     scope_label = (f"전국 {n_states}개 주" if C.SCOPE != C.DEFAULT_SCOPE
                    else "California · Texas · Michigan 3개 주")
@@ -392,11 +422,13 @@ def main():
         surface=CT.SURFACE, ink=CT.INK, ink2=CT.INK2, muted=CT.MUTED,
         hair=CT.HAIRLINE, axis=CT.AXIS,
         vw=VIEW_W, vh=height, maxlv=len(levels) - 1,
-        caveats="".join(f"<li><b>{h}</b> {b}</li>" for h, b in CAVEATS),
+        caveats="".join(f"<li><b>{h}</b> {b}</li>"
+                        for h, b in CAVEATS + [SPLIT_NOTES[split]]),
         projnote=PROJECTION_NOTE,
         foot=("출처: Murder Accountability Project / Kaggle Homicide Reports "
               "1980–2014. 기대값은 공정성 완화(손실 벌점)를 거친 GraphSAGE 모델의 "
-              "test 집합 예측이며, 전역 로짓 보정 후 간접 표준화(SMR)로 계산했다. "
+              f"{'out-of-fold' if split == 'crossfit' else 'test 집합'} 예측이며, "
+              "전역 로짓 보정 후 간접 표준화(SMR)로 계산했다. "
               "재현 방법은 저장소의 CLAUDE.md 참고."),
         static=json.dumps(static, ensure_ascii=False, separators=(",", ":")),
         per=json.dumps(per, separators=(",", ":")),
