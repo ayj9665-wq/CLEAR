@@ -190,15 +190,17 @@ def group_table(counts, boot):
 
 # ---- 격차 · 증폭비 ----
 
-def gap_samples(counts, boot, groups):
-    """지표별 (점추정 gap, 부트스트랩 gap 배열) + 증폭비 표본.
+def _gap_stats(pt, bt, groups):
+    """{그룹: 지표별 비율} 점추정·부트스트랩 -> 지표별 (gap, gap 표본) + 증폭비.
+
+    pooled(`gap_samples`)와 층 표준화(`standardized_contrast_rows`)가 **공유**한다.
+    비율을 어떻게 얻었는지(원 카운트냐 층 가중평균이냐)만 다르고 격차·증폭비의 정의는
+    같아야 하기 때문이다 — 두 벌로 두면 대조표와 개별 표가 조용히 다른 뜻을 갖는다.
 
     증폭비는 **같은 복제본 안에서** 분자(모델 격차)와 분모(base_rate 격차)를 함께
     계산한다(paired) — 둘이 같은 test 행에서 나오므로 독립으로 두면 구간이 과대해진다.
     분모가 0에 가까운 복제본은 nan으로 떨어뜨린다.
     """
-    pt = {g: _rates(counts[g]) for g in groups}
-    bt = {g: _rates(boot[g]) for g in groups}
     span_pt = lambda m: _span([pt[g][m] for g in groups])
     span_bt = lambda m: _span(np.stack([bt[g][m] for g in groups]))
 
@@ -211,7 +213,14 @@ def gap_samples(counts, boot, groups):
                            where=(base_bt > 1e-9))
         out[m] = (g_pt, g_bt)
         out[f"{m}_amplification"] = (amp_pt, amp_bt)
-    return pt, out
+    return out
+
+
+def gap_samples(counts, boot, groups):
+    """지표별 (점추정 gap, 부트스트랩 gap 배열) + 증폭비 표본."""
+    pt = {g: _rates(counts[g]) for g in groups}
+    bt = {g: _rates(boot[g]) for g in groups}
+    return pt, _gap_stats(pt, bt, groups)
 
 
 def gap_row(stats, pt, groups, label):
@@ -350,6 +359,130 @@ def standardized_gap_row(df, attr, groups, stratum_col, label, *,
                            where=(base_bt > 1e-9))
         row[f"{m}_amplification_lo"], row[f"{m}_amplification_hi"] = _ci(amp_bt)
     return row
+
+
+# ---- 층 표준화 **짝지은** 모델 대조 ----
+#
+# standardized_gap_row는 모델마다 독립으로 CI를 낸다. 모델들이 같은 test 행을 쓰므로
+# "구간이 겹치니 차이 없다"는 읽기가 무효인데(위 설계 (3) 참고), 그 해법인 결합 칸
+# 부트스트랩이 pooled 축에만 있었다. 여기서 층 축으로 올린다.
+#
+# 짝지음이 여기서 두 번 이긴다. (1) 공통 잡음이 **층마다** 상쇄된다 — pooled는 큰 표본
+# 하나에서 한 번 상쇄되는데 표준화는 층 각각에서 두 모델이 같은 행을 본다. (2) 분모가
+# 아예 같아진다: base_rate는 (fn+tp)/n이라 pred에 의존하지 않고, 결합 칸 추출은 y
+# 주변분포를 보존하므로 **한 복제본 안에서 두 모델의 base_rate 격차가 정확히 같다.**
+# 독립 추출에서는 그 차이가 통째로 잡음으로 들어간다.
+#
+# **반드시 쌍 단위로만.** 4**M 칸이 층 축에서 S배가 된다 — 쌍이면 (B=1000, S=314)에
+# 40MB/그룹이지만 6개 모델이면 10.3GB다(전국 표준화 실행이 실제로 6개였다).
+
+
+def strat_joint_counts(dumps, attr, stratum_col, y_col="y_true", pred_col="pred"):
+    """(그룹 -> (S, 4**M) 결합 칸 카운트, 층 라벨, 모델 라벨 순서).
+
+    strat_counts의 `s_idx*4 + cell` 자리에 `s_idx*(4**M) + joint`를 쓴 것뿐이다.
+    결합 인덱스 규약은 pooled의 joint_counts와 같다(sum_m cell_m * 4**m).
+    """
+    labels = list(dumps)
+    ref = dumps[labels[0]]
+    strata = pd.Index(pd.unique(ref[stratum_col].values)).sort_values()
+    s_idx = pd.Index(strata).get_indexer(ref[stratum_col].values)
+    y = ref[y_col].values.astype(np.int64)
+    joint = np.zeros(len(ref), dtype=np.int64)
+    for m, lab in enumerate(labels):
+        joint += (2 * y + dumps[lab][pred_col].values.astype(np.int64)) * (4 ** m)
+    size = 4 ** len(labels)
+    flat = s_idx * size + joint
+    g = ref[attr].values
+    counts = {grp: np.bincount(flat[g == grp], minlength=len(strata) * size)
+                     .reshape(len(strata), size)
+              for grp in pd.unique(g)}
+    return counts, list(strata), labels
+
+
+def standardized_contrast_rows(dumps, attr, groups, stratum_col, label, *,
+                               min_stratum_n=100, n_boot=None, seed=None):
+    """모델 **쌍**의 층 표준화 격차 차이 + 짝지은 CI. dumps는 2개짜리 dict.
+
+    반환은 _contrast_rows와 같은 열 이름을 쓰되 층 정보를 더한다 — pooled 대조표와
+    나란히 읽히도록. 층이 2개 미만이거나 그룹이 2개 미만이면 빈 리스트.
+    """
+    n_boot = C.FAIRNESS_BOOTSTRAP_N if n_boot is None else n_boot
+    seed = C.RANDOM_STATE if seed is None else seed
+    counts, strata, labels = strat_joint_counts(dumps, attr, stratum_col)
+    if len(labels) != 2:
+        raise ValueError(f"쌍 단위로만 대조한다(받은 모델 {len(labels)}개). "
+                         f"4**M 칸이 층 축에서 S배가 되므로 3개 이상은 메모리가 터진다.")
+    groups = [g for g in groups if g in counts]
+    if len(groups) < 2:
+        return []
+    # 결합 칸은 행을 분할하므로 sum(axis=1)이 곧 층별 그룹 표본수다 -> 그대로 재사용.
+    keep, w = usable_strata(counts, groups, min_stratum_n)
+    if keep.sum() < 2:
+        return []
+
+    M = len(labels)
+    rng = np.random.default_rng(seed)
+    pt_c, bt_c = {}, {}
+    for g in groups:
+        c = counts[g][keep]                                   # (S, 4**M)
+        n = c.sum(axis=1)
+        p = np.divide(c, n[:, None], out=np.zeros_like(c, dtype=float),
+                      where=(n[:, None] > 0))
+        # 층마다 독립 결합 multinomial -> (B, S, 4**M). 한 번 뽑아 두 모델로 주변화하는
+        # 것이 짝지음의 전부다.
+        pt_c[g] = c
+        bt_c[g] = np.stack([rng.multinomial(int(n[s]), p[s], size=n_boot)
+                            if n[s] > 0
+                            else np.zeros((n_boot, c.shape[1]), dtype=np.int64)
+                            for s in range(c.shape[0])], axis=1)
+
+    # marginal()은 prefix가 임의 차원이라 (B,S,4**M) -> (B,S,4)가 수정 없이 된다.
+    side, pt_of, bt_of = {}, {}, {}
+    for i, lab in enumerate(labels):
+        pt_of[lab] = {g: _std_rates(marginal(pt_c[g], i, M), w) for g in groups}
+        bt_of[lab] = {g: _std_rates(marginal(bt_c[g], i, M), w) for g in groups}
+        side[lab] = _gap_stats(pt_of[lab], bt_of[lab], groups)
+
+    a, b = labels
+    rows = _contrast_rows(side[a], side[b], a, b, label)
+
+    # **부호 있는 격차를 함께 낸다 — 두 그룹일 때만.**
+    #
+    # _span은 max-min이라 항상 >= 0이다. 그런데 두 모델의 격차가 **반대 방향**을 가리키면
+    # (한쪽은 White가 높고 다른 쪽은 Black이 높으면) 절댓값 두 개는 재추출에서 서로
+    # 반대로 움직인다 -- 실측 corr이 -0.72다. 그러면 짝지음이 분산을 줄이는 게 아니라
+    # **키운다**(짝지은 CI가 독립 유추보다 1.3배 넓어졌다). 부호를 살리면 corr이 +0.73으로
+    # 뒤집히고 CI가 2.0배 좁아진다.
+    #
+    # 그리고 이건 정밀도 문제만이 아니다. 부호 없는 비교는 "GNN 격차가 XGBoost의 0.59배"로
+    # 읽히는데, 실제로는 **두 격차가 0의 반대편에 있다**(GNN은 Black이 높고 XGBoost는
+    # White가 높다). 절댓값만 보면 그 사실이 사라진다.
+    #
+    # 세 그룹 이상에서는 부호가 정의되지 않으므로(어느 쌍의 차이인지 모호) 내지 않는다.
+    if len(groups) == 2:
+        g0, g1 = groups
+        signed_pt = lambda l, m: pt_of[l][g0][m] - pt_of[l][g1][m]
+        signed_bt = lambda l, m: bt_of[l][g0][m] - bt_of[l][g1][m]
+        for m in GAP_METRICS:
+            d_bt = signed_bt(a, m) - signed_bt(b, m)
+            lo, hi = _ci(d_bt)
+            rows.append({
+                "group_set": label, "model_a": a, "model_b": b,
+                "metric": m, "quantity": "signed_gap",
+                "signed_as": f"{g0}-{g1}",
+                "gap_a": signed_pt(a, m), "gap_b": signed_pt(b, m),
+                "diff": signed_pt(a, m) - signed_pt(b, m),
+                "diff_lo": lo, "diff_hi": hi,
+                "significant": bool(np.isfinite(lo) and np.isfinite(hi)
+                                    and (lo > 0 or hi < 0)),
+            })
+
+    for r in rows:
+        r.update({"stratum": stratum_col, "n_strata": len(strata),
+                  "n_strata_used": int(keep.sum()), "min_stratum_n": min_stratum_n,
+                  "n_standardized": int(sum(counts[g][keep].sum() for g in groups))})
+    return rows
 
 
 # ---- 진단 진입점 ----

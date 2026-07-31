@@ -35,6 +35,7 @@ n=178 그룹이 결정해 버려서, 한 벌만 보고하면 오도된다.
 주의: 아직 **진단만** 한다. 격차를 줄이는 완화(처방, 단계 3)는 다음 스크립트.
 """
 import argparse
+import itertools
 import sys
 
 import pandas as pd
@@ -117,7 +118,7 @@ def main():
         print(f"[strat] 층 = {strat_label} ({pd.Series(strata).nunique()}개), "
               f"층당 그룹 최소 {args.stratum_min_n}")
 
-    all_groups, all_gaps, all_contrasts, all_std = [], [], [], []
+    all_groups, all_gaps, all_contrasts, all_std, all_stdc = [], [], [], [], []
     for attr in SENS_ATTRS:
         missing = [l for l, df in dumps.items() if attr not in df.columns]
         if missing:
@@ -181,6 +182,37 @@ def main():
                           f"(층 {r['n_strata_used']}/{r['n_strata']}, "
                           f"{r['n_standardized']:,}행)")
 
+        # 층 표준화 **짝지은** 모델 대조. 위 표준화 표는 모델마다 독립 CI라 겹침으로
+        # 차이를 판정할 수 없다 -- 결합 칸 부트스트랩을 층 축으로 올린 것이 이것이다.
+        # 쌍 단위로만 돈다(4**M 칸이 층 축에서 S배가 되므로).
+        if strata is not None and len(dumps) > 1:
+            stdc_rows = []
+            for ma, mb in itertools.combinations(dumps, 2):
+                pair = {m: dumps[m].assign(**{strat_label: strata}) for m in (ma, mb)}
+                for _, r in gaps[gaps["model"] == ma].iterrows():
+                    grp = [g for g in str(r["groups"]).split(" | ") if g]
+                    for min_s in sorted(args.stratum_min_n):
+                        stdc_rows += [
+                            {"attribute": name, **row}
+                            for row in fairness.standardized_contrast_rows(
+                                pair, attr, grp, strat_label, r["group_set"],
+                                min_stratum_n=min_s, n_boot=args.n_boot)]
+            if stdc_rows:
+                stdc = pd.DataFrame(stdc_rows)
+                all_stdc.append(stdc)
+                sel = stdc[(stdc["metric"] == "selection_rate")
+                           & (stdc["quantity"] == "signed_gap")]
+                if len(sel):
+                    print(f"\n  -- 층 표준화({strat_label}) **짝지은** 대조 "
+                          f"(부호 있는 격차) --")
+                    for _, r in sel.iterrows():
+                        v = "유의" if r["significant"] else "판정불가(CI가 0을 걸침)"
+                        print(f"  [{r['group_set']} / 층하한 {r['min_stratum_n']}] "
+                              f"{r['model_a']} - {r['model_b']} "
+                              f"({r['signed_as']}): {r['gap_a']:+.4f} vs "
+                              f"{r['gap_b']:+.4f} -> 차이 {r['diff']:+.4f} "
+                              f"[{r['diff_lo']:+.4f}, {r['diff_hi']:+.4f}]  {v}")
+
         # 모델 대조: 개별 CI 겹침이 아니라 짝지은 차이로 판정한다.
         dp = contrasts[(contrasts["metric"] == "selection_rate")
                        & (contrasts["quantity"] == "amplification")]
@@ -207,6 +239,13 @@ def main():
     if all_std:
         paths_out.append(
             (C.scoped_output(f"fairness_gaps_standardized{sfx}.csv"), all_std))
+    # 5번째 파일. fairness_model_contrasts.csv는 **pooled** 대조표이고 보고서가 그것을
+    # 인용하므로, 표준화 대조를 행으로 더하면 stratum으로 필터하지 않는 쪽이 두 추정량을
+    # 섞어 센다 -- fairness_gaps_standardized를 분리한 것과 같은 논거다.
+    if all_stdc:
+        paths_out.append(
+            (C.scoped_output(f"fairness_model_contrasts_standardized{sfx}.csv"),
+             all_stdc))
     print()
     for p, frames in paths_out:
         pd.concat(frames, ignore_index=True).to_csv(p, index=False, encoding="utf-8-sig")

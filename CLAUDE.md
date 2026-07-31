@@ -71,7 +71,11 @@ python -m experiments.diagnose_fairness --stratum State,City --stratum_min_n 20 
                                           # county stratum. `State,City` is mandatory (county
                                           # names collide across states); --out_suffix is
                                           # mandatory for ANY non-default run — this script
-                                          # replaces all four tracked fairness_*.csv wholesale
+                                          # replaces the tracked fairness_*.csv wholesale.
+                                          # Any --stratum run also writes a 5th table,
+                                          # fairness_model_contrasts_standardized*.csv:
+                                          # PAIRED model differences on the stratum axis.
+                                          # Read `quantity="signed_gap"`, not amplification.
 python -m experiments.edge_homophily      # -> outputs/edge_homophily.csv (are edges a sensitive-attribute proxy?)
 python -m experiments.edge_relatedness    # -> outputs/edge_relatedness.csv (do edges link genuinely related cases?)
 python -m experiments.edge_relatedness --no_oracle                  # skip the O(n^2)-per-block oracle
@@ -1151,17 +1155,52 @@ the natural follow-up), channel × race interaction (partly definitional: race-d
 triage inside one department *is* institutional discrimination), and race-differential
 recording.
 
-**Two execution limits worth knowing before extending this.** There is **no national
+**One execution limit worth knowing before extending this.** There is **no national
 XGBoost dump and none can be made** — the four committed flat dumps are the *three-state*
 sample and `train_baseline.py` is gone — so the flat-vs-graph discriminating test runs at
-three-state scope only, where it shows the two models crossing (pooled, GraphSAGE's race
-gap is 2.2× XGBoost's; county-standardized it is 0.59×, since GraphSAGE's gap falls 85%
-and XGBoost's only 45% — different layers, graph-block vs feature-proxy). That crossing is
-**not significant**: 56 counties, wide CIs, and `standardized_gap_row` deliberately
-provides no *paired* contrast, so unpaired CI overlap cannot decide it. Building the paired
-version is the clear next step — `clear.fairness`'s joint-cell trick extends to a
-stratum × joint-cell multinomial — and it was left out only because the plan pre-registered
-it out of scope.
+three-state scope only.
+
+**That test is now paired, and it says the two models land on opposite sides of zero.**
+(`reports/짝지은표준화대조_계획서_CLEAR.md`, pre-registered `278dd7a`, tag
+`pre-paired-std`.) `standardized_contrast_rows` lifts the pooled joint-cell trick to the
+stratum axis: draw a 16-cell multinomial per (stratum, group) and marginalize back to each
+model, so differences are computed within replicate. `marginal()` needed **no change** —
+its reshape takes an arbitrary prefix, so `(B,S,16)` folds to `(B,S,4,4)` correctly.
+Pairing also makes the denominators identical replicate-by-replicate, since `base_rate` is
+`(fn+tp)/n` and a joint draw preserves the y-marginal.
+
+**The catch, and it changed a reported result: `_span` is `max−min`, so it is unsigned.**
+When two models' gaps point *opposite ways*, their absolute values move in opposite
+directions under resampling — measured `corr = −0.72…−0.75`, so pairing *widened* the CI
+to 0.76–0.79× of the independent guess. Signed gaps flip this to `corr = +0.73…+0.76` and
+**1.9–2.0× narrowing**. `standardized_contrast_rows` therefore also emits
+`quantity="signed_gap"` (two-group sets only — sign is undefined for three or more), and
+`signed_as` records the direction. This is not only precision: county-standardized,
+GraphSAGE's race gap is **+0.0103 (Black − White)** while blind XGBoost's is **−0.0175**,
+so the earlier "GraphSAGE's gap is 0.59× XGBoost's" understated it — they are not
+differently sized, they are **on opposite sides of zero**, and paired differences are
+significant at all three floors (+0.0277 [+0.0206, +0.0345] at n≥20, +0.0261 and +0.0253
+at 30 and 50). Remove the between-county channel and the GNN has **no White-favouring race
+residual left**, while the flat model's feature-proxy channel is untouched by county
+standardization. Sex is significant too and in the same direction for both models
+(+0.0368 vs +0.0537, difference −0.0168 [−0.0244, −0.0091]).
+
+Judge these on **`signed_gap`, not amplification**: the standardized `base_rate` gap has a
+sample CV of 0.108, so dividing by that small noisy denominator hands the ratio its full
+multiplicative noise and the amplification contrast stays wide even paired. A national
+positive control (`geo_blind_mb − a100_mb`, 314 strata) is what separated "low power" from
+"broken implementation" when the CI-narrowing check first failed — keep it in any rerun.
+Output is a fifth file, `fairness_model_contrasts_standardized{suffix}.csv`, separate for
+the same reason the standardized gaps are: the pooled contrast table is what the reports
+cite.
+
+**Side result: the alpha ladder is confirmed non-monotone in the county-standardized
+metric.** Signed gaps go −0.0208 (α=0) → +0.0005 (α=10) → +0.0065 (α=25) → +0.0013 (α=50)
+→ +0.0079 (α=100) — the penalty overshoots past zero, and `a25−a50` (+0.0052 [+0.0029,
++0.0077]) and `a50−a100` (−0.0066 [−0.0093, −0.0041]) are both significant, so the wobble
+is real rather than noise. On the within-county gap the best point is **α=10, not α=100**.
+That is a measured argument that turning the pooled-defined knob harder is the wrong
+instrument, and it is input to the stratified-penalty design rather than a re-tune.
 
 **`experiments/build_web_map.py` is the national deliverable** — one self-contained HTML,
 zero external requests, no chart library (a choropleth is fill on `<path>`; projection and
