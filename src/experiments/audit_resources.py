@@ -175,22 +175,49 @@ def analyse(m, measure, n_boot, seed):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--src", default="cold_blocks_cv5.csv",
-                    help="detect_cold_blocks 출력. 기본은 크로스피팅(대표 지도와 같은 표).")
-    ap.add_argument("--min_n", type=int, nargs="+", default=[20, 50, 100],
+    ap.add_argument("--target", choices=["z", "rho"], default="z",
+                    help="종속변수. z = detect_cold_blocks의 카운티 잔차(기본). "
+                         "rho = county_race_residual의 **카운티 내부 인종 대비** "
+                         "log(SMR_Black/SMR_White). 질문이 달라진다 — z에서는 '자원이 "
+                         "인종 상관을 설명하나'이고, rho에서는 카운티 절편이 이미 "
+                         "소거돼 있으므로 '자원이 **인종-차등 처우**를 설명하나'다"
+                         "(카운티차분 계획서 §6-4, §8-2의 누수 2를 직접 검정한다). "
+                         "**params에 반드시 실린다** — 안 그러면 KEY가 같아져 "
+                         "results.csv의 기존 z 행을 조용히 교체한다(§6-4).")
+    ap.add_argument("--src", default=None,
+                    help="원본 표. 생략 시 target에 따라 cold_blocks_cv5.csv 또는 "
+                         "county_race_residual.csv.")
+    ap.add_argument("--min_n", type=int, nargs="+", default=None,
                     help="블록 최소 표본. 원본 표가 각 floor마다 **검정을 다시 돌린** "
-                         "행을 갖고 있으므로 여기서도 floor별로 따로 회귀한다.")
+                         "행을 갖고 있으므로 여기서도 floor별로 따로 회귀한다. "
+                         "생략 시 z는 20 50 100, rho는 10 20 30.")
     ap.add_argument("--measures", nargs="+", default=list(MEASURES),
                     choices=list(MEASURES))
     ap.add_argument("--n_boot", type=int, default=2000)
-    ap.add_argument("--out", default="resource_audit.csv")
+    ap.add_argument("--out", default=None)
     args = ap.parse_args()
+
+    # target별 기본값. 열 이름이 표마다 다르므로 한곳에서 매핑한다.
+    IS_RHO = args.target == "rho"
+    args.src = args.src or ("county_race_residual.csv" if IS_RHO
+                            else "cold_blocks_cv5.csv")
+    args.min_n = args.min_n or ([10, 20, 30] if IS_RHO else [20, 50, 100])
+    args.out = args.out or (f"resource_audit_{args.target}.csv" if IS_RHO
+                            else "resource_audit.csv")
+    ycol = "rho" if IS_RHO else "z"
+    racecol = "black_share_both" if IS_RHO else "black_share"
+    floorcol = "min_race_n" if IS_RHO else "min_n"
 
     res = load_county_resources()
     src = C.scoped_output(args.src)
     if not src.exists():
-        raise SystemExit(f"[에러] {src} 없음. 먼저 detect_cold_blocks를 실행할 것.")
-    cold = pd.read_csv(src)
+        raise SystemExit(f"[에러] {src} 없음. 먼저 "
+                         f"{'county_race_residual' if IS_RHO else 'detect_cold_blocks'}"
+                         f"를 실행할 것.")
+    cold = pd.read_csv(src).rename(columns={ycol: "z", racecol: "black_share",
+                                            floorcol: "min_n"})
+    if "flag" not in cold.columns:
+        cold["flag"] = ""          # rho 표에는 유의성 판정이 없다(계획서 §6-3)
 
     tabs, ledger = [], []
     for min_n in args.min_n:
@@ -234,8 +261,12 @@ def main():
                                     "r2_race", "r2_resource", "r2_both")},
                 model="graphsage_fairloss_a100_mb_cv5", tag=measure,
                 group_set=f"n>={min_n}",
+                # target은 rho일 때만 넣는다. 기본값(z)에서도 넣으면 기존 42행의
+                # params JSON이 바뀌어 KEY가 갈리고, 재실행이 교체가 아니라
+                # **중복**이 된다 -- GNN_EDGE_MODE=None / scope_param()과 같은 규약.
                 params={"min_n": min_n, "measure": measure, "src": args.src,
-                        "n_boot": args.n_boot},
+                        "n_boot": args.n_boot,
+                        **({"target": "rho"} if IS_RHO else {})},
                 ci={"race_attenuation": (lo, hi)},
                 notes={"n_counties": len(m),
                        "corr_z_resource": round(st["corr_z_resource"], 4),

@@ -66,6 +66,12 @@ python -m experiments.diagnose_fairness --stratum State --stratum_min_n 100
                                           # also writes fairness_gaps_standardized.csv (default;
                                           # --stratum none skips). Pooled gaps carry a
                                           # region-composition confound — see below.
+python -m experiments.diagnose_fairness --stratum State,City --stratum_min_n 20 30 50 \
+       --min_n 5000 --out_suffix _county --models graphsage_geo_blind_mb graphsage_fairloss_a100_mb
+                                          # county stratum. `State,City` is mandatory (county
+                                          # names collide across states); --out_suffix is
+                                          # mandatory for ANY non-default run — this script
+                                          # replaces all four tracked fairness_*.csv wholesale
 python -m experiments.edge_homophily      # -> outputs/edge_homophily.csv (are edges a sensitive-attribute proxy?)
 python -m experiments.edge_relatedness    # -> outputs/edge_relatedness.csv (do edges link genuinely related cases?)
 python -m experiments.edge_relatedness --no_oracle                  # skip the O(n^2)-per-block oracle
@@ -91,10 +97,21 @@ python -m experiments.crossfit_predictions --minibatch   # 5-fold out-of-fold p�
                                     # ~76 min at national scope; alpha/blind/minibatch fixed to the a100 gate value
 python -m experiments.crossfit_compare    # -> outputs/national/crossfit_compare.csv (the §2-1 judgment)
 
+python -m experiments.county_race_residual   # -> outputs[/{scope}]/county_race_residual{,_summary}.csv
+                                    # (county x race) O/E residual; rho = log(SMR_Black/SMR_White)
+                                    # holds the county fixed, so any channel acting as an
+                                    # additive county intercept cancels. Reads the cv5 dump.
+python -m experiments.county_race_residual --min_race_n 10 20 30 --haldane off
+                                    # per-race floor sweep / drop the +0.5 log correction
+
 python -m experiments.audit_resources     # -> outputs[/{scope}]/resource_audit.csv
                                     # joins LEOKA agency-year officer counts onto the county
                                     # residual; needs dataset/geo/LEOKA_parquet_1960_2024_year/
 python -m experiments.audit_resources --src cold_blocks.csv --min_n 20   # test-split table instead
+python -m experiments.audit_resources --target rho    # -> resource_audit_rho.csv
+                                    # regress the WITHIN-county race contrast instead of z.
+                                    # `target` rides in params only when rho, so the existing
+                                    # 42 z rows in results.csv keep their identity KEY
 
 python -m experiments.audit_priority      # -> outputs[/{scope}]/priority_audit{.csv,_lift.png}
                                     # D3 priority-list fairness audit; defaults to the
@@ -892,10 +909,14 @@ It is not exclusively a race story (Texas Cameron, SMR 1.90, is 0.000 Black shar
 a blocking key, not a feature — it is absent from `config.CATEGORICAL_COLS` and enters
 only indirectly through the graph. So `E_b` carries almost no county-specific effect and
 **z is effectively "how far does this county deviate from a state-and-case-mix
-baseline"**. Discrimination, investigative resourcing, urbanicity, and recording practice
-are **not separable** in this design (`Agency Type` only partly proxies urbanicity).
-The z-vs-race correlation must not be read causally, and that sentence has to travel with
-any map built on this table.
+baseline"**. Case mix, discrimination, investigative resourcing, and recording practice
+are **not separable** in this design. *Urbanicity is not a fifth channel but their common
+cause* — it is a container for witness cooperation, caseload per agency, agency size and
+stranger-homicide share, and it is simultaneously a mediator of the discrimination path
+through residential segregation, so entering it as a regressor makes the race coefficient
+uninterpretable in a new way rather than isolating anything; it is a stratifier only
+(`Agency Type` partly proxies it). The z-vs-race correlation must not be read causally,
+and that sentence has to travel with any map built on this table.
 
 **The national run is done, and it reproduces the mechanism at scale.** 638,454 rows /
 51 states / 123 feature columns; `geo` gives exactly the 3,042 blocks the design doc
@@ -955,9 +976,10 @@ National cold blocks (test set, α=100, δ=+0.8170): 853 county blocks at n≥20
 Orleans, Richmond, DC, Wayne, Cook — far stronger face validity than three states could
 show. `z ↔ black_share` strengthens to **+0.381** (+0.546 at n≥100), cold blocks
 averaging 0.680 Black share against warm 0.233; still not exclusively a race story
-(2 of 38 cold counties are under 0.30). The §5-4-1 caveat is unchanged and travels with
-the map: the model has no county feature, so z carries the whole county effect and
-discrimination / resourcing / urbanicity / recording practice are not separable.
+(2 of 38 cold counties are under 0.30). The §5-4-1 caveat travels with the map: the model
+has no county feature, so z carries the whole county effect and case mix / discrimination
+/ resourcing / recording practice are not separable — **but which *layer* the race
+association lives in is now measured, see the county-differencing section below.**
 
 **Cross-fitting doubled that coverage and cut the correlation, exactly as pre-registered.**
 `experiments/crossfit_predictions.py` gives every one of the 638,454 rows an out-of-fold
@@ -1069,6 +1091,77 @@ contamination here, since "solvable case" and "case in a low-clearance county" s
 separable without aggregation; and it violates the unit rule this repo already derived for
 edges — at MCC 0.30 an individual-case output is noise-dominated, and the unit has to be the
 block. Only the audit statistics ship.
+
+**Holding the county fixed cancels three of those four channels, at zero new data — and
+that relocates the whole race association.** (`reports/카운티차분_계획서_CLEAR.md`,
+pre-registered at `95be50a`, rollback tag `pre-county-diff`.) Adding covariates to a
+county-level regression on z only partitions R² among regressors correlated 0.7–0.9 with
+each other; `audit_resources` already hit that wall. Stratifying instead needs no measure
+of a channel, only that it is *constant within a county*: any channel acting as an
+additive county intercept cancels in a within-county comparison, which is resourcing,
+urbanicity and recording practice. Only an interaction with victim race survives — not
+because discrimination is stronger but because **only discrimination is defined as that
+interaction.** Two tracks, no retraining:
+
+- **`diagnose_fairness --stratum State,City`** pushes `standardized_gap_row` from `State`
+  down to county. `clear/fairness.py` needed **no change** (`strat_counts` only does
+  `pd.unique` + `get_indexer`). `--stratum City` alone would be silently wrong — county
+  names collide across dozens of states, so the composite key is mandatory, same as
+  `BLOCK_KEYS["county"]`. `--stratum_min_n` drops to 20–30 (national test is ~63 rows per
+  county) and takes several values; `--out_suffix` is now **required** for any non-default
+  run because this script replaces four tracked CSVs wholesale on every invocation.
+- **`experiments/county_race_residual.py`** is the track that actually decomposes z. It
+  computes `O/E/V` per (county × race) with the same `calibrate` δ and reports
+  `ρ_b = log(SMR_Black / SMR_White)`. **`ρ`, not `z`-difference, is primary**: `z` scales
+  with √n, so correlating it with county covariates confounds effect size with county
+  size — the exact trap the cross-fitting track found. Variance comes from the delta
+  method, the mean is inverse-variance weighted, and the CI resamples **counties**
+  (the observation unit), as in `audit_resources`.
+
+**The result: the model's blind race gap is 88% between-county, and the residual's race
+association is 100% between-county.** Nationally, blind GraphSAGE's race
+selection-rate gap goes 0.1378 pooled → 0.1029 (State) → **0.0169** (county, 314 strata)
+while the base-rate gap goes 0.0763 → 0.0661 → 0.0256 — numerator down 88%, denominator
+66%, so amplification 1.805 → 1.558 → **0.662 [0.452, 0.888]**, CI upper bound below 1 at
+all three floors. Read it as: the model has no county feature, so its only route to "which
+county" is the graph — this is `mitigate_graph`'s block-membership channel measured
+directly rather than inferred by elimination, and **within a county the model *understates*
+the real race gap.** The pre-registered trap (§3-1) matters here: because `City` *is* the
+`geo` blocking key, this fall confirms the mechanism instead of refuting it; sex and race
+undergo the same arithmetic with opposite meaning (geo sex assortativity 0.0336 vs race
+0.2308).
+
+Meanwhile `ρ` is clearly non-zero — **+0.083 [+0.056, +0.128]** (651 counties, race floor
+20; stable at +0.081/+0.083/+0.085 across floors), i.e. within the same county Black-victim
+cases stay unsolved ~8.7% more than a race-neutral baseline expects. But
+**`corr(ρ, black_share) ≈ 0`** (−0.015 [−0.108, +0.105], all floors). So `z ↔ black_share
+= +0.290` is **entirely a county-level intercept effect**, and "who gets forgotten" splits
+into two independent components: a *uniform* within-county race gap that does not vary with
+county composition, and a county-level deficit that does and that resourcing / urbanicity /
+recording practice / case mix remain unseparated within. `audit_resources --target rho`
+adds that the staffing proxy explains 0.5–0.9% of `ρ`'s variance (the attenuation headline
+is undefined here — its denominator is the ~0 race coefficient — so read partial R²).
+Both `ρ > 0` and the county-standardized amplification `< 1` are the same statement from
+opposite sides, which is the cross-check. Caveats that travel: `ρ` is a **lower bound**
+(α=100's within-state race gap is still negative), the inverse-variance mean is
+large-county weighted (the unweighted mean only clears zero at floor 30), and three leaks
+survive county differencing — within-county case mix (`Circumstance` is absent from the
+Kaggle CSV; this is the one leak differencing *cannot* close and the reason an SHR join is
+the natural follow-up), channel × race interaction (partly definitional: race-differential
+triage inside one department *is* institutional discrimination), and race-differential
+recording.
+
+**Two execution limits worth knowing before extending this.** There is **no national
+XGBoost dump and none can be made** — the four committed flat dumps are the *three-state*
+sample and `train_baseline.py` is gone — so the flat-vs-graph discriminating test runs at
+three-state scope only, where it shows the two models crossing (pooled, GraphSAGE's race
+gap is 2.2× XGBoost's; county-standardized it is 0.59×, since GraphSAGE's gap falls 85%
+and XGBoost's only 45% — different layers, graph-block vs feature-proxy). That crossing is
+**not significant**: 56 counties, wide CIs, and `standardized_gap_row` deliberately
+provides no *paired* contrast, so unpaired CI overlap cannot decide it. Building the paired
+version is the clear next step — `clear.fairness`'s joint-cell trick extends to a
+stratum × joint-cell multinomial — and it was left out only because the plan pre-registered
+it out of scope.
 
 **`experiments/build_web_map.py` is the national deliverable** — one self-contained HTML,
 zero external requests, no chart library (a choropleth is fill on `<path>`; projection and

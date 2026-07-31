@@ -78,10 +78,22 @@ cross-fitting으로 모든 행에 out-of-fold p_hat을 만들고, 그 덤프를 
 **결정적 한계: 모델은 카운티를 모른다.** City는 특성이 아니라 블로킹 키일 뿐이라
 (config.CATEGORICAL_COLS에 없다) 그래프를 통해서만 간접적으로 들어간다. 그래서
 E_b에는 카운티 고유 효과가 거의 없고, z는 사실상 **"이 카운티가 주(州)·사건구성
-기준선에서 얼마나 벗어나는가"**를 잰다. 그 이탈이 차별 때문인지, 수사 자원
-때문인지, 도시성 때문인지, 기록 관행 때문인지는 **이 설계로 분리되지 않는다.**
-Agency Type이 도시성을 일부 대리할 뿐이다. z와 인종 구성의 상관을 인과로 읽으면
-안 된다.
+기준선에서 얼마나 벗어나는가"**를 잰다. 그 이탈이 **사건구성** 때문인지, 차별
+때문인지, 수사 자원 때문인지, 기록 관행 때문인지는 **이 설계로 분리되지 않는다.**
+(도시성은 이 넷과 나란한 채널이 아니라 **공통원인**이다 — 목격자 협조·사건당 부하·
+기관 규모·낯선사람 살인 비중을 담는 그릇이고, 동시에 거주지 분리를 통해 차별 경로의
+매개자이기도 하다. 회귀변수로 넣으면 새로운 방식으로 해석 불가능해지므로 층화
+변수로만 쓴다. Agency Type이 그것을 일부 대리한다.) z와 인종 구성의 상관을 인과로
+읽으면 안 된다.
+
+**그리고 그 상관이 어느 층에 있는지는 이제 측정됐다**(experiments/county_race_residual.py,
+카운티차분 계획서 §12-4). 카운티를 고정하고 인종별로 같은 잔차를 내면
+log(SMR_Black/SMR_White) = **+0.083 [+0.056, +0.128]** (역분산 가중, 카운티 651개)로
+0이 아니지만, 그 값과 카운티 흑인비중의 상관은 **0**이다(−0.015 [−0.108, +0.105]).
+즉 **z ~ black_share = +0.290은 전부 카운티 수준 절편 효과**다 — 흑인 비중이 높은
+카운티는 잔차가 나쁘지만 그 카운티 **안에서** 흑인 피해자가 특별히 더 나쁘지는 않고,
+카운티 내부 격차는 어디에나 균일하게 존재한다. 위 네 채널이 분리되지 않는다는 말은
+**절편 성분에 대해서만** 유효하다.
 
 출력: outputs/cold_blocks.csv
 """
@@ -103,33 +115,10 @@ BLOCK_KEYS = {
 
 _EPS = 1e-9
 
-
-def calibrate(proba, y, mode="shift"):
-    """p_hat의 전역 보정. 반환 (보정된 p, 진단 dict).
-
-    shift : 로짓에 상수 delta를 더해 sum(p) == sum(y)를 맞춘다. 1-파라미터
-            단조변환이라 순위 불변 -- 우선순위 목록(D3)이 영향받지 않는다.
-    none  : 보정 안 함(진단용. 이 데이터에서는 기대가 48% 부풀어 있어 쓸 수 없다).
-    """
-    p = np.clip(np.asarray(proba, dtype=np.float64), _EPS, 1 - _EPS)
-    target = float(np.asarray(y).sum())
-    before = p.sum()
-    if mode == "none":
-        return p, {"delta": 0.0, "sum_p_before": before, "sum_y": target,
-                   "sum_p_after": before}
-
-    logit = np.log(p / (1 - p))
-    lo, hi = -20.0, 20.0                      # sigmoid는 이 범위 밖에서 포화
-    for _ in range(200):                      # 단조라 이분법이면 충분하다
-        mid = (lo + hi) / 2
-        if (1.0 / (1.0 + np.exp(-(logit + mid)))).sum() < target:
-            lo = mid
-        else:
-            hi = mid
-    delta = (lo + hi) / 2
-    out = 1.0 / (1.0 + np.exp(-(logit + delta)))
-    return out, {"delta": delta, "sum_p_before": before, "sum_y": target,
-                 "sum_p_after": float(out.sum())}
+# 전역 보정은 clear.predictions로 옮겼다 -- 보정 대상이 그 모듈이 정의한 proba 열이고
+# 호출부가 둘이 됐다(county_race_residual). 이름을 남겨 두는 이유는 이 파일의 설명
+# (§"전역 보정이 필수다")이 계속 calibrate를 가리키기 때문이다.
+calibrate = predictions.calibrate
 
 
 def bh_fdr(p):

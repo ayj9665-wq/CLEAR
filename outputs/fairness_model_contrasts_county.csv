@@ -1,0 +1,25 @@
+﻿attribute,group_set,model_a,model_b,metric,quantity,diff,diff_lo,diff_hi,significant
+Victim Race,named_all,graphsage_geo_blind,xgboost_blind,selection_rate,gap,0.04468126196369082,-0.003731381370770851,0.09735472169222431,False
+Victim Race,named_all,graphsage_geo_blind,xgboost_blind,selection_rate,amplification,0.6403036317507849,-0.05105631305342181,1.6156955381683848,False
+Victim Race,named_all,graphsage_geo_blind,xgboost_blind,tpr,gap,0.020540654600255226,-0.02206562465839946,0.08174489920197284,False
+Victim Race,named_all,graphsage_geo_blind,xgboost_blind,tpr,amplification,0.2943573023915431,-0.3645132027953716,1.420995839508287,False
+Victim Race,named_all,graphsage_geo_blind,xgboost_blind,fpr,gap,0.08139856762748332,-0.047602485005430344,0.16761070799493616,False
+Victim Race,named_all,graphsage_geo_blind,xgboost_blind,fpr,amplification,1.1664800003532436,-0.6580960721150851,2.907896951009827,False
+Victim Race,named_n>=5000,graphsage_geo_blind,xgboost_blind,selection_rate,gap,0.0387968225972945,0.03253444221775667,0.04456674057333263,True
+Victim Race,named_n>=5000,graphsage_geo_blind,xgboost_blind,selection_rate,amplification,0.8157223630637828,0.6470976667195465,1.0326664999755721,True
+Victim Race,named_n>=5000,graphsage_geo_blind,xgboost_blind,tpr,gap,0.04217120095268456,0.02278490824939356,0.048870441974373305,True
+Victim Race,named_n>=5000,graphsage_geo_blind,xgboost_blind,tpr,amplification,0.886670335131011,0.46071374474938265,1.1181634865786305,True
+Victim Race,named_n>=5000,graphsage_geo_blind,xgboost_blind,fpr,gap,0.027071102941704617,0.01695380235560062,0.037345784850504236,True
+Victim Race,named_n>=5000,graphsage_geo_blind,xgboost_blind,fpr,amplification,0.56918331409671,0.3381388305133014,0.8399767809269949,True
+Victim Sex,named_all,graphsage_geo_blind,xgboost_blind,selection_rate,gap,0.006927131842469958,-0.0008151486024284699,0.014094805013909934,False
+Victim Sex,named_all,graphsage_geo_blind,xgboost_blind,selection_rate,amplification,0.08625987196328322,-0.01033112479515146,0.18125187355528774,False
+Victim Sex,named_all,graphsage_geo_blind,xgboost_blind,tpr,gap,0.007101794351033974,-0.0020090304524162687,0.016059481391393855,False
+Victim Sex,named_all,graphsage_geo_blind,xgboost_blind,tpr,amplification,0.08843485086770464,-0.023020443038339656,0.198949414018072,False
+Victim Sex,named_all,graphsage_geo_blind,xgboost_blind,fpr,gap,0.00219636641642712,-0.013532081487774138,0.01779415752090829,False
+Victim Sex,named_all,graphsage_geo_blind,xgboost_blind,fpr,amplification,0.027350177558899347,-0.16314316383891064,0.21782136686371417,False
+Victim Sex,named_n>=5000,graphsage_geo_blind,xgboost_blind,selection_rate,gap,0.006927131842469958,-0.0008151486024284699,0.014094805013909934,False
+Victim Sex,named_n>=5000,graphsage_geo_blind,xgboost_blind,selection_rate,amplification,0.08625987196328322,-0.01033112479515146,0.18125187355528774,False
+Victim Sex,named_n>=5000,graphsage_geo_blind,xgboost_blind,tpr,gap,0.007101794351033974,-0.0020090304524162687,0.016059481391393855,False
+Victim Sex,named_n>=5000,graphsage_geo_blind,xgboost_blind,tpr,amplification,0.08843485086770464,-0.023020443038339656,0.198949414018072,False
+Victim Sex,named_n>=5000,graphsage_geo_blind,xgboost_blind,fpr,gap,0.00219636641642712,-0.013532081487774138,0.01779415752090829,False
+Victim Sex,named_n>=5000,graphsage_geo_blind,xgboost_blind,fpr,amplification,0.027350177558899347,-0.16314316383891064,0.21782136686371417,False

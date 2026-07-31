@@ -81,6 +81,56 @@ def load(path):
     return pd.read_csv(path)
 
 
+# ---- 전역 보정 -----------------------------------------------------------------
+#
+# 여기 있는 이유: 보정 대상이 바로 이 모듈이 정의한 `proba` 열이고, 호출부가 둘이다
+# (experiments/detect_cold_blocks.py, experiments/county_race_residual.py) --
+# 저장소 규칙의 "2곳 이상"을 넘겼다. detect_cold_blocks 안에 두면 두 스크립트가
+# 각자 보정을 구현하게 되고, 그러면 delta의 정의가 조용히 갈려 같은 잔차가 두 뜻을
+# 갖는다(clear.fairness를 분리한 것과 같은 논거).
+
+_EPS = 1e-9
+
+
+def calibrate(proba, y, mode="shift"):
+    """p_hat의 전역 보정. 반환 (보정된 p, 진단 dict).
+
+    clear.gnn의 손실은 BCEWithLogitsLoss(pos_weight=neg/pos)로 클래스를 재가중하므로
+    p_hat은 순위는 옳지만 **보정된 확률이 아니다** -- 실측하면 기대 미해결이 관측보다
+    48~54% 높다. 그대로 관측-기대 잔차를 내면 거의 모든 블록이 "기대보다 적게 미해결"로
+    나와, 재는 것이 지역 이상이 아니라 전역 miscalibration이 된다.
+
+    shift : 로짓에 상수 delta를 더해 sum(p) == sum(y)를 맞춘다. 1-파라미터 단조변환이라
+            **순위가 전혀 안 바뀐다** -- 우선순위 목록(D3)이 영향받지 않는다. 전역 잔차가
+            0이 되므로 검정은 블록 간 **상대** 편차만 본다: 간접 표준화의 정의 그대로다.
+    none  : 보정 안 함(진단용).
+
+    delta는 **한 숫자**이므로 그룹별 미보정 차이는 흡수하지 못한다. 카운티x인종 잔차
+    (county_race_residual)가 성립하는 근거가 그것이다 -- 인종-차등 어긋남은 잔차에
+    그대로 남고, 그것이 재려는 격차다. 따라서 delta를 **그룹별로 따로 적합해서는
+    안 된다**(그러면 격차가 정의상 0이 된다).
+    """
+    p = np.clip(np.asarray(proba, dtype=np.float64), _EPS, 1 - _EPS)
+    target = float(np.asarray(y).sum())
+    before = p.sum()
+    if mode == "none":
+        return p, {"delta": 0.0, "sum_p_before": before, "sum_y": target,
+                   "sum_p_after": before}
+
+    logit = np.log(p / (1 - p))
+    lo, hi = -20.0, 20.0                      # sigmoid는 이 범위 밖에서 포화
+    for _ in range(200):                      # 단조라 이분법이면 충분하다
+        mid = (lo + hi) / 2
+        if (1.0 / (1.0 + np.exp(-(logit + mid)))).sum() < target:
+            lo = mid
+        else:
+            hi = mid
+    delta = (lo + hi) / 2
+    out = 1.0 / (1.0 + np.exp(-(logit + delta)))
+    return out, {"delta": delta, "sum_p_before": before, "sum_y": target,
+                 "sum_p_after": float(out.sum())}
+
+
 def discover(models=None):
     """outputs/predictions/의 덤프를 {라벨: 경로}로 수집(라벨 = 파일명 stem).
 
