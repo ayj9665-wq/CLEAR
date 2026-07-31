@@ -214,10 +214,23 @@ SHR의 `ori`와 붙는다는 점은 이미 검증돼 있다. **그래도 G2 게�
 
 ### 5-2. 필요한 파일
 
-- **SHR 원본**(Kaplan 통합본, openICPSR). `circumstance`, `situation` 열이 목표다.
-  `relationship`은 Kaggle CSV에 이미 있고 `LEAKAGE_COLS`다.
-  **정확한 deposit ID는 착수 시 확인할 것** — LEOKA(102180)처럼 확인된 번호가 아니다.
-- `dataset/geo/`와 같은 취급: gitignore, 재다운로드 가능.
+- **SHR 원본**: Kaplan 통합본, **openICPSR 100699**
+  (*Jacob Kaplan's Concatenated Files: UCR Program Data: Supplementary Homicide Reports*).
+  LEOKA의 102180과 **다른 deposit**이다. 무료 계정 로그인이 필요하다.
+  - 우리 표본이 1980–2014이므로 **1976–2017을 덮는 V7 이상이면 무엇이든 충분하다.**
+    최신은 V16(1976–2024). 버전을 올려도 얻을 것이 없으므로 **받은 버전을 기록해 둔다**
+    — 연도 범위가 바뀌면 `r_c` 적합 표본이 달라진다.
+  - 목표 열은 `circumstance`(+ 보조로 `situation`). `relationship`은 Kaggle CSV에 이미
+    있고 `config.LEAKAGE_COLS`다.
+- **둘 자리**: `dataset/geo/`. `.gitignore`의 `dataset/geo/` 규칙이 그대로 적용되므로
+  커밋되지 않고, LEOKA와 같은 취급이다(재다운로드 가능한 공개 참조 데이터).
+
+```
+dataset/geo/
+  LEOKA_parquet_1960_2024_year/     <- 이미 있음 (openICPSR 102180)
+  ICPSR_35158/                      <- 있으나 안 씀 (LEAIC, 계획서 §5-2 각주)
+  SHR_.../                          <- 여기에 푼다 (openICPSR 100699)
+```
 
 ---
 
@@ -278,7 +291,7 @@ src/experiments/shr_circumstance.py       (새 스크립트 하나)
 
 ```
 0. git tag pre-shr-join                                        [되돌림 지점]
-1. SHR 확보 + deposit ID 확인                                   [1시간]
+1. openICPSR 100699 다운로드 -> dataset/geo/ (§5-2)             [30분]
 2. 조인 + §1 누수 검사(G1) + §3-1 매칭률(G2)                    [2시간]  <- 여기서 죽을 수 있다
 3. (통과 시) r_c 적합 + ρ' 재계산 + §7 검수                     [반나절]
 4. §3-2 판정, 구간 확정                                         [1시간]
