@@ -112,6 +112,13 @@ python -m experiments.audit_resources     # -> outputs[/{scope}]/resource_audit.
                                     # joins LEOKA agency-year officer counts onto the county
                                     # residual; needs dataset/geo/LEOKA_parquet_1960_2024_year/
 python -m experiments.audit_resources --src cold_blocks.csv --min_n 20   # test-split table instead
+python -m experiments.shr_circumstance    # -> outputs[/{scope}]/shr_recording_{summary,by_county,by_circumstance}.csv
+                                    # SHR circumstance recording: is it downstream of the
+                                    # outcome, and is it race-differential within county?
+                                    # Needs dataset/geo/shr_1976_2016_csv/ (openICPSR 100699).
+                                    # Reads the RAW csv for Agency Code, like audit_resources.
+python -m experiments.shr_circumstance --min_race_n 10 20 30 --min_unsolved 50
+
 python -m experiments.audit_resources --target rho    # -> resource_audit_rho.csv
                                     # regress the WITHIN-county race contrast instead of z.
                                     # `target` rides in params only when rho, so the existing
@@ -1149,11 +1156,50 @@ Both `ρ > 0` and the county-standardized amplification `< 1` are the same state
 opposite sides, which is the cross-check. Caveats that travel: `ρ` is a **lower bound**
 (α=100's within-state race gap is still negative), the inverse-variance mean is
 large-county weighted (the unweighted mean only clears zero at floor 30), and three leaks
-survive county differencing — within-county case mix (`Circumstance` is absent from the
-Kaggle CSV; this is the one leak differencing *cannot* close and the reason an SHR join is
-the natural follow-up), channel × race interaction (partly definitional: race-differential
-triage inside one department *is* institutional discrimination), and race-differential
-recording.
+survive county differencing — within-county case mix, channel × race interaction (partly
+definitional: race-differential triage inside one department *is* institutional
+discrimination), and race-differential recording. **The SHR join settled the first and
+measured the third** (see below).
+
+**`experiments/shr_circumstance.py` closes the case-mix question by proving it cannot be
+closed, and measures the recording channel instead.** (`reports/SHR정황조인_계획서_CLEAR.md`.)
+`Circumstance` is absent from the Kaggle CSV but present in SHR (Kaplan, **openICPSR
+100699** — a different deposit from LEOKA's 102180). The join works: the raw CSV carries
+`Incident`, so `(Agency Code, Year, Month, Incident)` hits the SHR incident directly —
+**96.10% matched, White 95.90% vs Black 96.16%, a 0.27pp race difference**, rows preserved
+at 638,454. So the data is usable; the problem is what it is.
+
+**Recorded circumstance is downstream of the outcome, which makes it a collider.** With
+`C*` the true circumstance, `C` the recorded one, `Y` solved and `R` victim race, the graph
+is `R → C* → Y` (the confound we wanted to block), `R → D → Y` (the target), and
+`C* → C ← Y`. Conditioning on `C` opens that collider, inducing a non-causal `C*`–`Y`
+association that flows into `R`–`Y` via `R → C*`. **Not a noisier control — a different
+operation, with unknown sign.** The `Y → C` edge is real: `P(undetermined)` is **14.6% on
+solved vs 56.4% on unsolved**. And the decisive part is that the coding depends on race
+*given the county*: unsolved cases with Black victims are **+4.1pp [+2.0, +6.8]** more
+likely to be coded undetermined (floors 10/20/30 give +4.0/+4.1/+4.1, all CIs excluding
+zero; pooled is +8.2pp, so roughly half is between-county and half within). Adjusting `E_b`
+for circumstance would therefore absorb "police recorded less for Black victims' unsolved
+cases" as if it were case mix — the same laundering this repo already refused for race and
+for staffing. Both `--undetermined`-as-category and `--undetermined`-excluded variants fail:
+the second selects a subsample on solvedness (85.4% vs 43.6%), breaking the O/E
+construction. **So the within-county case-mix leak is permanently open, and ρ still has
+only an upper bound.** That is a settled answer to a question that was open, and the
++4.1pp is direct evidence for the race-differential recording leak.
+
+Two traps worth keeping. A "survival ratio" (share among unsolved ÷ share among solved)
+looks like a contamination diagnostic and is **a tautology** — it equals
+`(1−q_c)/q_c × (N_solved/N_unsolved)` exactly, so it carries nothing beyond the category's
+own clearance rate (predicted 1.113 vs observed 1.11 for robbery, and so on). And the
+pre-registered discriminating test **failed**: correlating county clearance with each
+category's share among unsolved was supposed to split offender-dependent categories
+(positive under contamination) from felony-type ones (negative under genuine case mix);
+observed medians are +0.007 vs +0.106, the wrong way round, and
+`corr(clearance, undetermined share)` is **+0.090** rather than negative. It is kept in the
+script rather than dropped. The conclusion does not rest on it — it rests on the semantics
+of "undetermined" (a statement about investigation, not about the case) plus the
+within-county race dependence, which invalidates `C` as a control whether the mechanism is
+`Y → C` or `D → C`.
 
 **One execution limit worth knowing before extending this.** There is **no national
 XGBoost dump and none can be made** — the four committed flat dumps are the *three-state*
