@@ -32,7 +32,8 @@ import argparse
 
 import config as C   # torch import 전에 필요 (KMP_DUPLICATE_LIB_OK 등 env 설정)
 from clear.data import load_xy
-from clear.gnn import prepare, train_eval, dump_test_predictions, parse_seeds
+from clear.gnn import (prepare, train_eval, dump_test_predictions, parse_seeds,
+                       save_checkpoint)
 from clear import predictions, results
 
 import torch
@@ -76,6 +77,11 @@ def main():
     parser.add_argument("--dump_predictions", action="store_true", default=True,
                          help="edge_type별 test 노드 예측을 outputs/predictions_graphsage_{edge}.csv로 저장(공정성 진단 07용)")
     parser.add_argument("--no_dump_predictions", dest="dump_predictions", action="store_false")
+    parser.add_argument("--save_model", action="store_true",
+                        help="시드별 가중치를 outputs[/{scope}]/models/ 에 저장한다. "
+                             "데이터를 가진 사람이 재학습 없이 재평가할 때 쓴다 — "
+                             "클론만 한 사람은 그래프도 특성도 없어 쓸 수 없으므로 "
+                             "기본은 꺼져 있고 git에도 올리지 않는다.")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -120,6 +126,15 @@ def main():
                                              f"{edge_type}{mode_sfx}{suffix}{mb_sfx}")
             dump_test_predictions(rows, test_idx, y, pred_path)
             print(f"[save] {pred_path} (test 노드 {len(test_idx):,}개, seed 평균 proba)")
+        if args.save_model:
+            mode_sfx = f"_{args.edge_mode}" if args.edge_mode else ""
+            mb_sfx = "_mb" if args.minibatch else ""
+            mdir = C.scoped_output("models")
+            for row in rows:
+                name = (f"graphsage_{edge_type}{mode_sfx}{suffix}{mb_sfx}"
+                        f"_seed{row['seed']}.pt")
+                save_checkpoint(row, mdir / name, list(X.columns), args.blind,
+                                C.SCOPE)
     print(f"[save] {results.results_path()} (family=train, {len(edge_types)}×{len(args.seeds)}회)")
 
 

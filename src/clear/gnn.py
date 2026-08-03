@@ -19,6 +19,7 @@ seed 반복 설계: split은 config.RANDOM_STATE로 고정하고(=baseline과 �
 """
 import time
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 
@@ -338,7 +339,83 @@ def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neigh
         # 공정성 진단(diagnose_fairness)용 원자료. '_' 접두 키는 clear.results가
         # canonical 지표 목록만 골라 담으므로 results.csv엔 안 들어간다.
         "_test_proba": test_proba,
+        # 체크포인트 저장용. '_' 접두라 results.csv에는 안 들어간다.
+        "_model": model,
     }
+
+
+def save_checkpoint(row, path, feature_cols, blind, scope):
+    """학습된 모델을 **되살리는 데 필요한 맥락 전부**와 함께 저장한다.
+
+    state_dict만 저장하면 못 쓴다. 셋이 더 필요하다.
+
+    1. **하이퍼파라미터** — 모델을 같은 모양으로 다시 만들어야 로드가 된다.
+    2. **특성 열 이름 순서** — 03_features.py의 원-핫 순서는 데이터에 의존하므로,
+       다른 기계에서 파이프라인을 다시 돌리면 열 순서가 달라질 수 있다. 그러면
+       가중치가 엉뚱한 특성에 붙는데 **오류는 안 나고 지표만 그럴듯하게 나온다**.
+       load_checkpoint가 이 목록을 대조해 불일치하면 죽는다.
+    3. **calibrated=False** — clear.gnn은 pos_weight로 학습해서 예측이 순위는 맞지만
+       확률로는 치우쳐 있다(전국 기대 미제가 관측보다 +47.9%). detect_cold_blocks가
+       로짓 이동 델타로 보정한 뒤에야 쓴다. 받아서 확률로 바로 쓰는 사람이 반드시
+       생기므로 파일에 적어 두고 로더가 경고한다.
+    """
+    import torch
+
+    model = row["_model"]
+    ckpt = {
+        "state_dict": {k: v.cpu() for k, v in model.state_dict().items()},
+        "hyper": {k: row[k] for k in
+                  ("hidden_dim", "num_layers", "dropout", "aggr")},
+        "feature_cols": list(feature_cols),
+        "in_dim": len(feature_cols),
+        "blind": bool(blind),
+        "scope": scope,
+        "edge_type": row["edge_type"], "edge_mode": row["edge_mode"],
+        "k_neighbors": row["k_neighbors"], "seed": row["seed"],
+        "tag": row["tag"], "fair_alpha": row.get("fair_alpha"),
+        "calibrated": False,
+        "n_params": row["n_params"],
+        "test_metrics": {k: v for k, v in row.items()
+                         if isinstance(v, float) and not k.startswith("_")},
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(ckpt, path)
+    print(f"[ckpt] {path.name}  ({path.stat().st_size/1024:.0f} KB, "
+          f"파라미터 {row['n_params']:,}개)")
+    return path
+
+
+def load_checkpoint(path, feature_cols=None):
+    """체크포인트를 읽어 (model, meta)를 돌려준다.
+
+    feature_cols를 주면 **순서까지 대조하고 다르면 죽는다.** 조용히 통과시키면
+    가중치가 다른 특성에 붙은 채로 그럴듯한 지표가 나온다 -- 이 저장소가 --blind
+    무음 no-op에서 이미 한 번 당한 종류다.
+    """
+    import torch
+
+    ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    if feature_cols is not None and list(feature_cols) != ckpt["feature_cols"]:
+        a, b = list(feature_cols), ckpt["feature_cols"]
+        diff = next((i for i, (x, y_) in enumerate(zip(a, b)) if x != y_), None)
+        raise SystemExit(
+            f"[에러] 특성 열이 체크포인트와 다르다 "
+            f"(현재 {len(a)}개 / 저장 {len(b)}개"
+            + (f", 첫 불일치 {diff}번: {a[diff]!r} != {b[diff]!r}" if diff is not None
+               else "")
+            + "). 가중치가 엉뚱한 특성에 붙으므로 로드를 중단한다. "
+              "03_features.py를 같은 스코프·같은 blind 조건으로 다시 만들 것.")
+    h = ckpt["hyper"]
+    model = GraphSAGE(ckpt["in_dim"], h["hidden_dim"], h["num_layers"],
+                      h["dropout"], h["aggr"])
+    model.load_state_dict(ckpt["state_dict"])
+    model.eval()
+    if not ckpt.get("calibrated", False):
+        print("[ckpt] 주의: 이 모델의 출력은 **보정되지 않은 점수**다. 순위는 맞지만 "
+              "확률로 쓰려면 로짓 이동 보정이 필요하다(detect_cold_blocks 참고).")
+    return model, ckpt
 
 
 def dump_test_predictions(rows, test_idx, y, path):
