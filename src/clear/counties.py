@@ -427,6 +427,34 @@ def red_arm(blue_arm=None, anchor=RED_ANCHOR, chroma_scale=0.85):
     return out
 
 
+def gray_arm(blue_arm=None, l_floor=0.66):
+    """파랑 팔을 대신하는 무채색 팔. **밝기를 그대로 두지 않고 압축한다.**
+
+    포트폴리오 페이지(experiments/build_story_page.py)는 "붉은색은 격차 경보 한
+    가지 뜻으로만 쓴다"는 규칙을 두므로, 발산형의 반대편 팔에서 색상을 뺀다.
+
+    처음에는 red_arm처럼 **밝기를 정확히 맞춰**(chroma만 0으로) 만들었다. 산술은
+    옳았지만 그려 놓고 보니 규칙이 뒤집혔다 -- 밝은 표면 위에서 같은 밝기라면
+    **무채색이 유채색보다 대비가 세다.** 가장 어두운 파랑 단계의 L=0.338을 그대로
+    회색으로 옮기면 #4a4a4a가 나오는데, 흰 카운티들 사이에서 이게 같은 밝기의
+    빨강보다 훨씬 강하게 튄다. 실제 지도에서 캘리포니아·네바다의 warm 카운티가
+    화면을 지배하고 정작 cold 카운티가 옅어 보였다.
+
+    그래서 밝기 범위를 [L_max, l_floor]로 **아핀 압축**한다. 단계 간 상대 간격은
+    보존되므로 순서와 단조성은 그대로이고, 팔 전체가 조용해질 뿐이다. 발산형의
+    "양 팔 밝기 대칭"을 의도적으로 깨는 것이며, 그 대가로 warm 쪽의 크기 비교가
+    어려워진다 -- 정확한 값은 표에서 읽는다.
+
+    렌더해서 눈으로 보기 전에는 안 보이는 종류의 문제였다(map_figures의 버그 셋과
+    같은 계열). 검증기는 색을 재지만 위계가 뒤집혔는지는 재지 않는다.
+    """
+    ls = [hex_to_oklab(h)[0] for h in (blue_arm or BLUE_ARM)]
+    lo, hi = min(ls), max(ls)
+    span = (hi - lo) or 1.0
+    return [oklab_to_hex(np.array([hi - (hi - L) * (hi - l_floor) / span, 0.0, 0.0]))
+            for L in ls]
+
+
 def arms(n_steps=None):
     """(파랑 단계, 빨강 단계) -- 5단계 램프에서 n_steps개를 **균등 샘플링**한다.
 
