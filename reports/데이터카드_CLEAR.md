@@ -227,8 +227,19 @@ Campedelli(2022)의 SHAP 상위 2개 변수가 `Circumstance`(Kaggle CSV에 아�
 - **원본 보존 여부: ✅** — `01_clean.py`는 원본 CSV를 절대 덮어쓰지 않고,
   매 단계가 **새 parquet를 쓰는 단방향 파이프라인**이다. 각 중간 산출물이 남아
   있어 어느 단계에서 무엇이 바뀌었는지 되짚을 수 있다.
-- `data/processed/`는 전체가 gitignore 대상이다. 대신 **재현 경로를 보장**한다:
-  `cd src && python 01_clean.py && python 02_sample.py && python 03_features.py`.
+- `data/processed/`는 전체가 gitignore 대상이다. 대신 **재현 경로를 보장**한다 —
+  각 단계가 앞 단계의 산출물을 읽으므로 **한 줄씩, 순서대로** 실행할 것
+  (`&&`로 잇지 않는다: Windows PowerShell 5.1에는 `&&`가 없어 줄 전체가
+  파서 오류로 죽고, `;`로 바꾸면 앞 단계가 실패해도 다음 단계가 낡은 parquet를
+  읽어 조용히 진행된다):
+
+  ```
+  cd src
+  python 01_clean.py
+  python 02_sample.py
+  python 03_features.py
+  ```
+
   모든 경로·상수·난수 시드(`RANDOM_STATE = 42`)가 `src/config.py` 한 곳에 있어
   같은 원본 CSV에서 항상 동일한 산출물이 나온다.
 - 결과 CSV(`outputs/*.csv`)는 실험 기록이므로 **git으로 추적한다**
