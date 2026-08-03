@@ -1,0 +1,10 @@
+# 대시보드 전용 의존 — `python -m experiments.dashboard` 만 돌릴 때는 이것만 있으면 된다.
+#
+# 왜 나눠 두는가: 대시보드는 **이미 커밋된 결과 CSV만** 읽으므로 torch도, PyG도,
+# scikit-learn도 필요 없다(config.py는 os/pathlib만, clear.results는 pandas만 import).
+# 전체 requirements.txt를 깔게 하면 CUDA 인덱스 안내와 pyg-lib 수동 설치까지 읽어야
+# 하고, 그 순간 README의 "3분 빠른 시작"이 거짓말이 된다.
+#
+# 모델을 다시 학습하거나 파이프라인을 돌리려면 requirements.txt 를 쓸 것.
+pandas>=2.0
+numpy>=1.24
