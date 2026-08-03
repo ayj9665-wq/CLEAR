@@ -339,7 +339,11 @@ function paint(){{
   legend(); table();
 }}
 function legend(){{
-  const L=document.getElementById('leg'); const d=D[LV[li]];
+  // 여기 한때 `const d=D[LV[li]];`가 있었다. D는 어디에도 정의된 적이 없어서
+  // ReferenceError가 났고, paint()가 카운티를 칠한 **직후** 여기서 멈췄다.
+  // 색은 칠해지므로 지도는 멀쩡해 보이는데 **범례와 표가 통째로 비어** 있었다.
+  // 헤드리스 브라우저로 DOM을 조회해서야 잡혔다 -- 배포본 3장이 전부 그랬다.
+  const L=document.getElementById('leg');
   const sw=c=>`<span class="sw" style="background:${{c}}"></span>`;
   let h='';
   if(layer==='res'){{
