@@ -201,7 +201,21 @@ python -m experiments.verify_html --selftest        # prove the checker catches 
                                           # original ReferenceError, then exit
 ```
 
-There is no test suite; there is no build/lint step configured. The HTML builders
+**Tests: `pytest` from the repo root** (39 tests, ~1.4 s, `tests/`). There is no build or
+lint step. The suite is deliberately narrow — it does not check performance or
+conclusions, it checks that **this repo's specific silent-wrong failures stay loud**:
+ledger identity (`params` is identity, `notes` is not — the 78-duplicate-row bug),
+`from_run` dropping `None` knobs, `--blind`'s no-op assertions, the seven-metric
+definitions (especially specificity-as-negative-recall, whose inversion would flip every
+mitigation claim), calibration being total-matching *and* rank-preserving, county
+canonicalization merging renames while **not** merging independent cities into their
+surrounding counties, `assert_one_row_per_fips` raising, the `flag == ""` vs `NaN` trap,
+and `_htmlcheck` actually failing on broken JS. Tests requiring `data/processed/` skip
+rather than fail, because a clone legitimately has no data — the same rule the dashboard's
+contract runs on. Both fixture directions were mutation-checked: emptying `ALIASES` or
+neutering the FIPS guard makes the corresponding tests fail.
+
+The HTML builders
 (`build_web_map`, `build_story_page`, `dashboard`) each carry their own build-time
 self-check instead — external-request scan, size budget, data invariants, and
 `_htmlcheck.node_check` (inline-JS syntax via `node --check`, skipped with a notice when
@@ -1394,11 +1408,20 @@ load-only check would miss it), and screen counts equal to counts recomputed fro
 original `const d=D[LV[li]];` into a copy of the shipped map and fails if the checker still
 passes; it currently reports the defect as 28 findings, the first being the uncaught
 `ReferenceError`. It runs by default before the real artifacts — same discipline as
-deliberately planting a syntax error to prove `node --check` fires. Coverage is jsdom's:
-the dashboard uses no browser-only API and the maps use only `createElementNS`, so three of
-four artifacts are covered — including both that carried the bug. `clear_story.html` needs
-a real browser (`IntersectionObserver`, `requestAnimationFrame`, `getBoundingClientRect`)
-and is not checked here.
+deliberately planting a syntax error to prove `node --check` fires. It runs by default before the real artifacts — same discipline as
+deliberately planting a syntax error to prove `node --check` fires.
+
+**All four artifacts are covered, and the story page needed a shim rather than a browser.**
+Reading what it actually does with the browser-only APIs settled that: `IntersectionObserver`
+drives scroll-reveal only (add `in`, `unobserve`), so a shim that reports immediate
+intersection *is* the fully-scrolled state we want to assert; `getBoundingClientRect`
+appears once as `void c.getBoundingClientRect()` to force reflow, so jsdom's zeros are
+harmless; and `requestAnimationFrame` is deliberately **not** used. So the shim fakes one
+visibility event, not layout — any future assertion that depends on layout does need a real
+browser. The story page gets its own selftest with a different injected defect, because its
+fatal mode differs: `.js` goes on at the top of the script and the CSS hides content only
+under `.js`, so a script that dies *after* that line leaves every section at `opacity:0` —
+a blank page. Injecting a throw right after the class is added reproduces exactly that.
 
 **The CSV cross-check immediately found a defect that is not in the map at all.** Screen
 counts ran 3 short at n≥20 and 1 short at n≥50/100. Two are legitimate — `City` is

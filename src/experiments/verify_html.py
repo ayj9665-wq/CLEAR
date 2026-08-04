@@ -58,6 +58,7 @@ def targets():
         ("dashboard", ROOT / "outputs" / "dashboard.html", "dashboard", None),
         ("map (cv5)", web / "map_national.html", "map", out / "cold_blocks_cv5.csv"),
         ("map (test)", web / "map_national_test.html", "map", out / "cold_blocks.csv"),
+        ("story", web / "clear_story.html", "story", out / "cold_blocks_cv5.csv"),
     ]
 
 
@@ -134,14 +135,27 @@ def check_map(label, obs, csv_path, errs):
             errs.append(f"{tag}: 범례가 비어 있다 (legend()가 죽었을 때의 증상)")
         if lv["legendSpans"] == 0:
             errs.append(f"{tag}: 범례 항목이 없다")
-        if lv["tableRows"] == 0:
+        # 요소가 없는 것과 요소가 있는데 비어 있는 것은 다른 사건이다. 섞으면
+        # 선택자 실수가 "표가 비었다"로 읽힌다 -- 실제로 소개 페이지에서 그랬다.
+        if not lv.get("tableFound", True):
+            errs.append(f"{tag}: 순위표 요소를 못 찾았다 (선택자가 페이지와 안 맞는다)")
+        elif lv["tableRows"] == 0:
             errs.append(f"{tag}: 순위표가 비어 있다 (table()이 안 불렸을 때의 증상)")
         if lv["painted"] == 0:
             errs.append(f"{tag}: 그려진 카운티가 없다")
         if lv["hatched"] >= lv["painted"]:
             errs.append(f"{tag}: 전부 빗금이다(판정된 카운티가 없다)")
 
-        key = int(lv["level"])
+        # 수준 라벨은 #mnv의 텍스트다. 스크립트가 죽으면 빈 문자열이 되므로
+        # **정수로 못 읽는 것 자체가 소견**이다 -- 여기서 예외를 던지면 검사기가
+        # 결함을 보고하는 대신 크래시한다(이 저장소가 이미 두 번 당한 양상이다).
+        try:
+            key = int(lv["level"])
+        except (TypeError, ValueError):
+            errs.append(f"{tag}: 수준 표시가 비어 있다({lv['level']!r}) "
+                        f"-- paint()가 끝까지 못 갔다")
+            continue
+
         if key in exp:
             n_drawn, n_sig, unmappable, collided = exp[key]
             if lv["tableRows"] != n_drawn:
@@ -172,6 +186,37 @@ def check_map(label, obs, csv_path, errs):
     tt = r.get("tableToggle", {})
     if tt.get("before") == tt.get("after"):
         errs.append(f"{label}: 표 접기 토글이 동작하지 않는다")
+
+
+def check_story(label, obs, csv_path, errs):
+    """소개 페이지. 지도 절은 같은 단언을 재사용하고, 서사 쪽 셋을 더한다."""
+    r, seen = obs["result"], obs["errors"]
+    for e in seen:
+        errs.append(f"{label}: 페이지가 예외를 던졌다 -- {e[:200]}")
+
+    # 스크립트가 끝까지 돌았는지의 카나리아. CSS가 `.js`가 붙었을 때만 본문을
+    # 숨기므로, 이 클래스가 붙은 채 리빌이 안 되면 **페이지가 빈 화면**이 된다.
+    if not r.get("jsClass"):
+        errs.append(f"{label}: <html>에 .js가 안 붙었다 (스크립트가 초반에 죽었다)")
+    if not r.get("sections"):
+        errs.append(f"{label}: 서사 절을 하나도 못 찾았다")
+    elif r["revealed"] != r["sections"]:
+        errs.append(f"{label}: 절 {r['sections']}개 중 {r['revealed']}개만 드러났다 "
+                    f"-- .js가 붙은 채 리빌이 안 되면 그 절은 **투명한 채로 남는다**")
+    if not r.get("hero"):
+        errs.append(f"{label}: hero 절이 없다")
+
+    # 본문에 박힌 수치가 표시된 텍스트와 같은가. 계획서가 "검증 가능한 숫자는 CSV에서
+    # 읽는다"고 정했으므로, 읽어 온 값과 화면에 찍힌 값이 갈리면 안 된다.
+    if not r.get("counters"):
+        errs.append(f"{label}: data-count 카운터가 하나도 없다")
+    for c in r.get("counters", []):
+        if c["want"] and c["want"] != c["text"]:
+            errs.append(f"{label}: 카운터 불일치 data-count={c['want']!r} "
+                        f"화면={c['text']!r}")
+
+    check_map(label + " 지도", {"result": r.get("map", {}), "errors": []},
+              csv_path, errs)
 
 
 def check_dashboard(label, obs, errs):
@@ -231,8 +276,44 @@ def selftest(errs):
             errs.append("[selftest] **결함을 심었는데 검사가 통과했다.** "
                         "이 검사기는 신뢰할 수 없다.")
         else:
-            print(f"[selftest] 통과 - 심어 둔 ReferenceError를 {len(found)}건으로 "
+            print(f"[selftest] 지도 통과 - 심어 둔 ReferenceError를 {len(found)}건으로 "
                   f"잡았다 (예: {found[0][:70]})")
+    finally:
+        tmp.unlink(missing_ok=True)
+
+    _selftest_story(errs)
+
+
+def _selftest_story(errs):
+    """소개 페이지 쪽 단언도 실제로 무는지 확인한다.
+
+    여기서 심는 결함은 지도와 다르다. 소개 페이지의 치명적 실패 양상은 **스크립트가
+    초반에 죽어 리빌이 안 도는 것**이다 -- `.js`는 붙었는데 절에 `in`이 안 붙으면
+    CSS가 본문을 `opacity:0`으로 숨긴 채 남겨, 페이지가 **빈 화면**이 된다. 그래서
+    스크립트 첫머리에 예외를 심어 그 상태를 만든다.
+    """
+    src = C.scoped_output("web") / "clear_story.html"
+    if not src.exists():
+        print("[selftest] clear_story.html 이 없어 서사 쪽 검증은 건너뛴다")
+        return
+    html = src.read_text(encoding="utf-8")
+    anchor = "document.documentElement.classList.add('js');"
+    if anchor not in html:
+        errs.append("[selftest] 소개 페이지에 결함을 심을 지점을 못 찾았다 "
+                    "-- 검사기가 낡았다")
+        return
+    broken = html.replace(anchor, anchor + "throw new Error('selftest');", 1)
+
+    tmp = ROOT / ".joblib_tmp" / "_selftest_story.html"
+    tmp.write_text(broken, encoding="utf-8")
+    try:
+        found = []
+        check_story("selftest", probe(tmp, "story"), None, found)
+        if not found:
+            errs.append("[selftest] **소개 페이지에 결함을 심었는데 통과했다.**")
+        else:
+            print(f"[selftest] 소개 페이지 통과 - {len(found)}건으로 잡았다 "
+                  f"(예: {found[0][:70]})")
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -265,6 +346,8 @@ def main():
         before = len(errs)
         if kind == "map":
             check_map(label, obs, csv_path, errs)
+        elif kind == "story":
+            check_story(label, obs, csv_path, errs)
         else:
             check_dashboard(label, obs, errs)
         mark = "OK " if len(errs) == before else "실패"
