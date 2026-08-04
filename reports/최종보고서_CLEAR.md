@@ -849,6 +849,16 @@ temporal은 모든 노드가 정확히 40) 순위화는 허브를 만들고(std 
 **출력을 렌더링해서 눈으로 볼 것** — 검증기는 색을 확인하지만 그림이 의도한 말을 하는지는
 확인하지 못한다. F1·Precision을 정확도 주장에서 빼는 것과 같은 규율을 그림에 적용한 것이다.
 
+**넷째가 뒤늦게 나왔고, 그것은 이미 배포본에 들어가 있었다.** `build_web_map`의
+`legend()`가 `const d=D[LV[li]];`로 시작했는데 `D`는 어디에도 정의된 적이 없어 호출마다
+`ReferenceError`가 났다. 그 시점에 `paint()`는 이미 카운티를 다 칠한 뒤였으므로 **지도는
+멀쩡해 보이는데 범례와 순위표가 통째로 비어** 있었고, 배포한 3장이 전부 그랬다.
+`node --check`는 통과시킨다(문법은 유효하다). 방출된 path·색을 되읽는 빌드 검증기도 이
+코드를 건드리지 않는다. **헤드리스 브라우저로 DOM을 조회해서야 잡혔다.** 이 저장소는
+당시 "DOM 동작은 미검증"이라고 적어 두었는데, 결함은 정확히 거기 숨어 있었다 —
+미검증이라고 적어 두는 것은 검증이 아니다. 그래서 규율이 한 칸 넓어졌다: **HTML
+산출물에서 "눈으로 본다"는 소스를 읽는 것이 아니라 DOM을 조회하는 것이다.**
+
 ### 7-4. 팔레트는 계산했고, 경계는 일부러 안 썼다
 
 파랑 팔은 문서화된 순차 램프이고, 빨강 팔은 **OKLab 명도를 단계별로 맞춰** 생성했다
@@ -903,6 +913,8 @@ temporal은 모든 노드가 정확히 40) 순위화는 허브를 만들고(std 
 
 | 산출물 | 위치 |
 |---|---|
+| **성능·공정성 대시보드** (클론 직후 실행) | `outputs/dashboard.html` |
+| **프로젝트 소개 페이지** (스크롤 서사) | `outputs/national/web/clear_story.html` |
 | 전국 웹 지도 (대표, 크로스피팅) | `outputs/national/web/map_national.html` |
 | 전국 웹 지도 (test 분할 참조) | `outputs/national/web/map_national_test.html` |
 | 통합 실험 원장 (long format, 6,679행) | `outputs/results.csv` |
@@ -913,7 +925,20 @@ temporal은 모든 노드가 정확히 40) 순위화는 허브를 만들고(std 
 | 수사 인력 감사(§6-4-1) | `outputs/national/resource_audit.csv` |
 | 엣지 진단 | `outputs/[national/]edge_homophily.csv`, `outputs/edge_relatedness{,_similarity}.csv` |
 | 포스터·지도 그림 | `outputs/poster_fig{1,2}_*.png`, `outputs/map_fig{1,2}_*.png` |
-| 문서 12종 | `reports/` |
+| 문서 18종 | `reports/` (+ 저장소 안내는 `README.md`) |
+
+**HTML 3종은 전부 자체 완결이고 외부 요청이 0이다.** 지도·소개 페이지·대시보드가 같은
+규율을 공유한다 — 차트 라이브러리 없이 투영과 단순화를 파이썬에서 끝내고 SVG path만
+싣는다. 셋 다 `.gitignore` 대상인데, **커밋된 결과 CSV 43개에서 재생성되기 때문**이다.
+그 CSV들이 커밋돼 있다는 사실이 "클론하고 한 줄 실행하면 성적표가 뜬다"의 근거이므로,
+`outputs/`의 작은 CSV를 추적하는 규칙은 정리 취향이 아니라 **산출물 자체**다.
+
+**모델 가중치는 저장 기능만 만들고 커밋하지 않는다.** `train_gnn --save_model`이 시드별
+`.pt`에 `state_dict`와 함께 하이퍼파라미터·**특성 열 이름 순서**·blind 여부·스코프·
+`calibrated: False`를 넣고, `load_checkpoint`가 열 순서를 대조해 다르면 죽는다(열 순서가
+어긋나면 가중치가 엉뚱한 특성에 붙고 지표는 그럴듯하게 나온다 — `--blind` 무음 no-op에서
+이미 당한 종류다). 커밋하지 않는 이유는 크기가 아니라 **클론만 한 사람은 그래프도 특성도
+없어 쓸 수 없기** 때문이다. 못 쓰는 파일을 넣으면 "모델을 배포했다"는 인상만 남는다.
 
 **원장이 하나인 것이 설계다.** `family`/`metric` 두 열로 "GNN이 기준선을 이겼나"가
 파일 간 비교가 아니라 groupby 한 번이 된다. 이전에는 같은 양이 네 개의 wide 테이블에
@@ -930,6 +955,22 @@ identity에 들어가므로 같은 설정 재실행이 **교체**가 된다. 가
 ---
 
 ## 10. 재현
+
+### 10-1. 결과만 확인한다면 (원본 데이터·GPU 불필요)
+
+```bash
+pip install -r requirements-dashboard.txt   # pandas + numpy 둘뿐
+cd src
+python -m experiments.dashboard             # -> outputs/dashboard.html, 브라우저 자동 오픈
+python -m experiments.dashboard --verify_clone   # git 추적 파일만 있는 임시 트리에서 빌드 검사
+```
+
+대시보드는 **커밋된 결과 CSV만** 읽는다(`data/processed/`·`dataset/`·미커밋 덤프를
+건드리지 않으며, torch를 import하지 않는다). 그래서 클론 직후에 돈다. `--verify_clone`이
+그 계약을 주장이 아니라 명령으로 만든다. README의 성능표도 손으로 적지 않고
+`--emit_readme_tables`가 `results.csv`에서 생성한다.
+
+### 10-2. 전체 재현 (재학습)
 
 ```bash
 pip install -r requirements.txt
@@ -949,6 +990,7 @@ python -m experiments.detect_cold_blocks --model graphsage_fairloss_a100_mb_cv5 
 python -m experiments.crossfit_compare
 python -m experiments.build_web_map --src cold_blocks_cv5.csv \
         --out map_national.html --simplify_km 1.5
+python -m experiments.build_story_page --src cold_blocks_cv5.csv --simplify_km 1.5
 ```
 
 `experiments/` 아래 모듈들은 **서로 의존하지 않는다**(전부 `features.parquet` +

@@ -216,3 +216,18 @@ XGBoost / LogReg          GNN (2~3 layer GraphSAGE)
 ├── outputs/ (그림·표·모델)
 └── 문제정의서 · 개발계획서(.md)
 ```
+
+**실제로는 이렇게 갔다** (계획과의 차이도 기록이므로 위 블록은 지우지 않는다):
+
+- 루트는 `2026_CLEAR/`이고 `data/raw/`는 없다 — 원본 CSV는 `dataset/`에 두고
+  `01_clean.py`가 바로 읽는다.
+- `notebooks/`는 만들지 않았다. EDA는 `src/eda.py`(스크립트)로 했고 결과를 얻은 뒤
+  제거했다(커밋 `96d1dd1`). `train_baseline.py`·`mitigate_threshold.py`·`ablation.py`도
+  같은 이유로 제거됐다 — 근거는 `CLAUDE.md`의 "Scope" 절.
+- `src/`는 **순서 있는 파이프라인 4개**(`01`~`04`)와 **서로 의존하지 않는 실험 모듈**
+  (`src/experiments/`, 18개), 그리고 **공용 로직 패키지**(`src/clear/`, 11개
+  모듈)로 갈렸다. 실험 파일에 번호를 붙였던 것은 되돌렸다 — 번호가 의존이 아니라
+  집필 순서를 뜻했고, 앞자리 숫자 때문에 `import`가 불가능해 공용 코드를 공유할 수
+  없었기 때문이다.
+- 문서는 루트가 아니라 `reports/` 아래 18종이고, 저장소 안내는 `README.md`,
+  작업 규약은 `CLAUDE.md`에 있다.

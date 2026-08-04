@@ -2,6 +2,12 @@
 
 - 작성자: 안윤지 · 작성일: 2026-07-23
 - 파이프라인 위치: [experiments/train_gnn.py](../src/experiments/train_gnn.py) (`model=graphsage`), 모델/학습은 `clear.gnn`
+- 가중치 저장: `--save_model` →
+  `outputs[/{scope}]/models/graphsage_{edge}[_mode][_blind][_mb]_seed{N}.pt`
+  (예측 덤프와 같은 이름 규칙). `state_dict`와
+  함께 하이퍼파라미터·**특성 열 이름 순서**·blind 여부·스코프·`calibrated: False`를 넣고,
+  `clear.gnn.load_checkpoint`가 열 순서를 대조해 불일치하면 죽는다. **커밋하지 않는다**
+  (클론만 한 사람은 그래프도 특성도 없어 쓸 수 없다)
 - 벤치마크/캐비엇 공통 문서: [모델벤치마크_선행연구비교.md](모델벤치마크_선행연구비교.md)
 
 ## 1. 역할 — "그래프가 도움이 되는가"의 본체

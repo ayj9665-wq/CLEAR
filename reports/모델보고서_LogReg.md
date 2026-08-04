@@ -1,7 +1,9 @@
 # 모델 보고서 — Logistic Regression (성능 하한)
 
 - 작성자: 안윤지 · 작성일: 2026-07-23
-- 파이프라인 위치: [experiments/train_baseline.py](../src/experiments/train_baseline.py) (`model=logreg`)
+- 파이프라인 위치: `src/experiments/train_baseline.py` (`model=logreg`) — **현재 저장소에
+  없다**(커밋 `96d1dd1`에서 복구). 결과는 `outputs/results.csv`(family=`train`)와 커밋된
+  예측 덤프 `outputs/predictions/logreg[_blind].csv`에 남아 있다
 - 벤치마크/캐비엇 공통 문서: [모델벤치마크_선행연구비교.md](모델벤치마크_선행연구비교.md)
 
 
