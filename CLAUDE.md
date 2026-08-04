@@ -192,7 +192,10 @@ CLEAR_SCOPE=national python -m experiments.build_story_page
 
 There is no test suite; there is no build/lint step configured. The HTML builders
 (`build_web_map`, `build_story_page`, `dashboard`) each carry their own build-time
-self-check instead — see the deployment-layer section.
+self-check instead — external-request scan, size budget, data invariants, and
+`_htmlcheck.node_check` (inline-JS syntax via `node --check`, skipped with a notice when
+`node` is absent). **None of it covers DOM behaviour**, which is where the one shipped JS
+defect lived — see the deployment-layer section.
 
 ## Scope: this repo is the graph line of work
 
@@ -1313,6 +1316,23 @@ instead of three times took 729 KB (over budget) to 664 KB, with 1.5 km simplifi
 closing to 626 KB. Verified without a browser by re-rendering the emitted paths and fills,
 `node --check`, and 13 data invariants.
 
+**Read that last sentence carefully, because it was half false for months.** The path
+re-rendering and the 13 invariants were run **by hand, once, during development** —
+`build_web_map.py` had no `check()` function at all — and `node --check` had **no call site
+anywhere in the repo** while five documents described it as a build-time check. Both are
+now real: `experiments/_htmlcheck.py` (`node_check`) extracts the inline `<script>` bodies
+and runs `node --check` on each, wired into all three HTML builders, and a syntax error
+fails the build. It **skips with a printed notice when `node` is absent**, because the
+dashboard's contract is that it builds on `pandas + numpy` alone and a hard node dependency
+would break it — but skipping-because-absent and passing-because-checked are different
+events and the output says which one happened. Two things this repo already knew showed up
+again while wiring it: `subprocess(text=True)` decodes with the locale codec, so reporting
+a syntax error **died in cp949** on the non-ASCII temp path (fixed to explicit UTF-8), and
+`OFL.txt` and `_htmlcheck.py` each broke `--verify_clone` the moment they became build
+inputs while untracked — which is exactly what that check is for.
+
+**`node --check` is syntax only, and the bug that shipped was not a syntax error.**
+
 **"DOM behaviour is unverified" was a real hole, and it had already shipped.** `legend()`
 opened with `const d=D[LV[li]];` — `D` was never defined anywhere, so the line threw a
 `ReferenceError` on every call. `paint()` had already filled the counties by then, so all
@@ -1322,6 +1342,15 @@ valid) and the emitted-path validator never touches it. It was found by querying
 in a headless browser. So the rule from the figure bugs generalizes to HTML: **the
 validator checks what you told it to check — open the artifact and look at it**, and for
 a page, "look" means query the DOM, not read the source.
+
+**DOM verification is still not wired** — that is the open item, and the assertions it
+needs are already determined by the bug above: zero uncaught errors on load; non-empty
+legend and ranked table; and the same assertions again **after driving the controls**,
+since `legend()` runs on every repaint and the failure landed after the first paint. Of the
+four artifacts, `dashboard.html` uses no browser-only API at all and the maps use only
+`createElementNS`, so jsdom covers three — including the two that carried the bug.
+`clear_story.html` needs a real browser (`IntersectionObserver`, `requestAnimationFrame`,
+`getBoundingClientRect`).
 
 **Two national maps ship, and the cross-fit one is primary.** `map_national.html` is built
 from `cold_blocks_cv5.csv` (1,800 counties carry data at n≥20); `map_national_test.html` is
@@ -1424,10 +1453,16 @@ gray ramp (`clear.counties.gray_arm`, which went into `clear/` because the OKLab
 lightness-matching discipline already lives there) and the page never spends alarm colour
 on anything else; and **fonts are subset per weight** — text is emitted as (string,
 weight) pairs so the build knows which glyphs each of 400/700/800 needs, and a missing
-glyph fails the build rather than rendering a box. `_fontpack.py` stays in `experiments/`
-rather than `clear/`: one caller, and this repo's rule for `clear/` is **two or more**.
+glyph fails the build rather than rendering a box.
 The globe hero was built and then **withdrawn** — the plan doc keeps the section marked
 철회 rather than deleting it.
+
+`_fontpack.py` (2 callers — story page and dashboard) and `_htmlcheck.py` (3 — both of
+those plus `build_web_map`) stay in `experiments/` even though they clear this repo's
+two-or-more bar for `clear/`. The bar is necessary, not sufficient: `clear/` holds the data
+and model logic that experiment scripts are thin CLIs over, and these two are **artifact
+plumbing** — font subsetting and HTML validation, which no analysis ever imports. The
+leading underscore marks that they are not part of the experiment surface.
 
 **Licensing is split three ways, and the split is load-bearing rather than bureaucratic.**
 The source data (Kaggle / Murder Accountability Project) is **CC BY-SA 4.0**, so

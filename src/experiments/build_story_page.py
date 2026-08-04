@@ -46,6 +46,7 @@ import numpy as np
 import config as C
 from clear import counties as CT
 from experiments import _fontpack as FP
+from experiments import _htmlcheck as HC
 from experiments.build_web_map import (
     VIEW_W, build_paths, color_tables, load_blocks,
 )
@@ -987,6 +988,11 @@ def main():
 def check(html, palette, static, per, levels, fips_order, kb):
     """빌드 자체 검사. 조용히 틀린 페이지를 내보내지 않는다."""
     errs = []
+    # 0) 인라인 JS 문법. 문법만 보므로 DOM 동작은 여전히 미검증이다(_htmlcheck 참조).
+    ok, msg = HC.node_check(html)
+    print(msg)
+    if not ok:
+        errs.append("인라인 JS 문법 오류(위 참조)")
     # 1) 외부 요청 0. base64 페이로드에는 //xxxx 꼴이 무수히 들어 있으므로
     #    먼저 지우고 검사한다 -- 안 지우면 폰트를 심는 순간 검사가 40건씩 거짓양성을
     #    낸다(실제로 그랬다).

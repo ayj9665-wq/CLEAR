@@ -46,6 +46,7 @@ import pandas as pd
 
 import config as C
 from experiments import _fontpack as FP
+from experiments import _htmlcheck as HC
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = ROOT / "outputs"
@@ -940,6 +941,10 @@ def open_story():
 
 def check(html, kb):
     errs = []
+    ok, msg = HC.node_check(html)
+    print(msg)
+    if not ok:
+        errs.append("인라인 JS 문법 오류(위 참조)")
     scrub = re.sub(r"base64,[A-Za-z0-9+/=]+", "base64,X", html)
     # 주석 안의 URL은 요청이 아니다(OFL 전문에 URL이 둘 있다). build_story_page와 같은 규칙.
     scrub = re.sub(r"<!--.*?-->", "", scrub, flags=re.S)

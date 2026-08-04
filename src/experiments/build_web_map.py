@@ -46,6 +46,7 @@ import numpy as np
 import pandas as pd
 
 import config as C
+from experiments import _htmlcheck as HC
 from clear import counties as CT
 
 VIEW_W = 1000.0            # viewBox 폭(투영 좌표를 여기에 맞춘다)
@@ -462,6 +463,16 @@ def main():
         levels=json.dumps([int(m) for m in levels]),
         fips=json.dumps(fips_order, separators=(",", ":")),
     )
+
+    # 이 스크립트에는 오랫동안 자체 검사가 없었다. 문서에 적혀 있던 "데이터 불변식
+    # 13개"와 "node --check 통과"는 개발 중 손으로 한 번 돌린 것이지 배선된 검사가
+    # 아니었고, 그 사이에 legend()의 ReferenceError가 지도 3장에 실려 나갔다.
+    # 문법 검사만으로 그 결함을 잡지는 못하지만(DOM 조회의 몫이다), 최소한 문서가
+    # 말하는 검사는 실제로 돌아야 한다.
+    ok, msg = HC.node_check(html)
+    print(msg)
+    if not ok:
+        raise SystemExit("[에러] 인라인 JS 문법 오류 - 지도를 쓰지 않는다.")
 
     out = C.scoped_output("web")
     out.mkdir(parents=True, exist_ok=True)
