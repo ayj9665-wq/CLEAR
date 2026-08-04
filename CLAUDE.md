@@ -201,7 +201,21 @@ python -m experiments.verify_html --selftest        # prove the checker catches 
                                           # original ReferenceError, then exit
 ```
 
-There is no test suite; there is no build/lint step configured. The HTML builders
+**Tests: `pytest` from the repo root** (39 tests, ~1.4 s, `tests/`). There is no build or
+lint step. The suite is deliberately narrow — it does not check performance or
+conclusions, it checks that **this repo's specific silent-wrong failures stay loud**:
+ledger identity (`params` is identity, `notes` is not — the 78-duplicate-row bug),
+`from_run` dropping `None` knobs, `--blind`'s no-op assertions, the seven-metric
+definitions (especially specificity-as-negative-recall, whose inversion would flip every
+mitigation claim), calibration being total-matching *and* rank-preserving, county
+canonicalization merging renames while **not** merging independent cities into their
+surrounding counties, `assert_one_row_per_fips` raising, the `flag == ""` vs `NaN` trap,
+and `_htmlcheck` actually failing on broken JS. Tests requiring `data/processed/` skip
+rather than fail, because a clone legitimately has no data — the same rule the dashboard's
+contract runs on. Both fixture directions were mutation-checked: emptying `ALIASES` or
+neutering the FIPS guard makes the corresponding tests fail.
+
+The HTML builders
 (`build_web_map`, `build_story_page`, `dashboard`) each carry their own build-time
 self-check instead — external-request scan, size budget, data invariants, and
 `_htmlcheck.node_check` (inline-JS syntax via `node --check`, skipped with a notice when
