@@ -52,6 +52,15 @@ def main():
                     help="0보다 크면 매 스텝 grad L2 norm을 이 값으로 클리핑한다. "
                          "높은 alpha에서 벌점이 BCE를 압도해 생기는 최적화 불안정"
                          "(§10-2, MCC seed std 급증)을 겨냥한 것. 0이면 클리핑 없음.")
+    ap.add_argument("--fair_stratum", default="none",
+                    help="벌점을 이 열의 층 **안에서** 계산하고 층가중으로 평균한다"
+                         "(none이면 현행 pooled 벌점). diagnose_fairness --stratum의 "
+                         "직접 표준화와 같은 구조다 — 재는 양과 누르는 양을 맞춘다. "
+                         "카운티(State,City)는 배치당 층별 노드가 0~2개라 못 쓴다: "
+                         "층은 State로 누르고 판정은 카운티로 한다(계획서 §4-1).")
+    ap.add_argument("--fair_min_cell", type=int, default=C.GNN_FAIR_MIN_CELL,
+                    help="(층 x 그룹) 셀 하한. 이 값이 개입의 정의에 들어가므로 "
+                         "사후에 고르지 않고 격자로 훑는다(계획서 §4-4).")
     args = ap.parse_args()
 
     su = sweep.setup(args)
@@ -75,21 +84,70 @@ def main():
     print(f"[load] X {su.X.shape} (blind={su.blind}), 벌점 대상 그룹 {sorted(targets)} "
           f"/ 제외 {int((codes_np < 0).sum()):,}행, device={su.device}")
 
+    # 층 라벨. diagnose_fairness --stratum과 **같은 규약**으로 붙인다(sample.parquet의
+    # 행 위치 = features.parquet의 행 위치 = fair_codes의 행 위치). 재는 쪽과 누르는
+    # 쪽이 같은 층 정의를 써야 이 개입의 전제가 성립한다.
+    fair_strata = fair_weights = None
+    if args.fair_stratum.lower() != "none":
+        import pandas as pd
+        cols = [c.strip() for c in args.fair_stratum.split(",") if c.strip()]
+        sample = pd.read_parquet(C.SCOPE_DIR / "sample.parquet")
+        missing = [c for c in cols if c not in sample.columns]
+        if missing:
+            raise SystemExit(f"[에러] sample.parquet에 열 없음: {', '.join(missing)}")
+        labels = (sample[cols[0]].astype(str) if len(cols) == 1
+                  else sample[cols].astype(str).agg("|".join, axis=1))
+        uniq = {v: i for i, v in enumerate(sorted(labels.unique()))}
+        strata_np = labels.map(uniq).values.astype(np.int64)
+        fair_strata = torch.tensor(strata_np, device=su.device)
+
+        # 층가중은 **학습 노드 전체에서 한 번 계산해 고정**한다(계획서 §4-3). 배치에서
+        # 계산하면 스텝마다 표준화 대상 인구가 달라져 벌점의 목표가 흔들린다.
+        # 벌점 대상 그룹(-1이 아닌 행)만 세는 것도 같은 이유 — 재는 표준화가 그 그룹
+        # 집합 위에서 정의돼 있다.
+        train_np = su.train_t.cpu().numpy()
+        elig = train_np[codes_np[train_np] >= 0]
+        w = np.bincount(strata_np[elig], minlength=len(uniq)).astype(np.float64)
+        fair_weights = torch.tensor(w / w.sum(), device=su.device)
+        # 셀 하한이 개입의 실효 표준화 인구를 정한다. 배치 기대 셀 크기를 미리
+        # 찍어 두면, 학습 뒤 [fair] 줄의 실측 참여 층 수와 대조할 수 있다.
+        frac = su.hp["batch_size"] / len(elig) if su.hp.get("minibatch") else 1.0
+        cell = (pd.crosstab(strata_np[elig], codes_np[elig]) * frac)
+        n_ok = int((cell.min(axis=1) >= args.fair_min_cell).sum())
+        print(f"[strat] 층 = {'|'.join(cols)} ({len(uniq)}개), 셀 하한 "
+              f"{args.fair_min_cell} -> 배치 기대 참여 층 {n_ok}개 "
+              f"(가중 질량 {float(fair_weights[torch.tensor(cell.index[cell.min(axis=1) >= args.fair_min_cell].values, device=su.device)].sum()):.3f})")
+
     # 그래프는 alpha 격자 내내 동일하므로 한 번만 만들어 재사용한다(mitigate_graph와 달리
     # 개입이 손실 쪽에 있어 그래프가 안 바뀐다).
     data = gnn.build_data(su.X, args.edge_type, args.k_neighbors, su.device,
                           minibatch=su.hp["minibatch"])
     print(f"[graph:{args.edge_type}] 엣지 {data.edge_index.shape[1]:,}개(방향)")
 
+    # 층 벌점은 **새 태그를 갖는다**(계획서 §0-1 규칙 2). 같은 태그를 쓰면 기존
+    # graphsage_fairloss_a*_mb 덤프를 덮어써서, 전환 판정의 비교 대상 자체가 사라진다.
+    strat_tag = ("" if fair_strata is None else
+                 f"_s{args.fair_stratum.replace(',', '')[:5].lower()}{args.fair_min_cell}")
+    # 층 노브는 안 쓸 때 params에서 빠져야 기존 행의 identity KEY가 유지된다
+    # (edge_mode·scope와 같은 규약).
+    strat_params = ({} if fair_strata is None else
+                    {"fair_stratum": args.fair_stratum,
+                     "fair_min_cell": args.fair_min_cell})
+
     for alpha in args.alphas:
         tag = (f"fairloss_a{alpha:g}" + (f"_b{args.beta:g}" if args.beta else "")
                + (f"_gc{args.grad_clip:g}" if args.grad_clip else "")
+               + strat_tag
                + ("" if args.attr == "Victim Race" else f"_{args.attr.split()[-1].lower()}")
                + ("" if su.blind else "_sighted"))
         print(f"\n=== {tag} ===")
         sweep.run_point(su, tag, data, "mitigate_loss",
-                        {"alpha": alpha, "beta": args.beta, "grad_clip": args.grad_clip},
-                        fair_alpha=alpha, fair_codes=fair_codes, fair_beta=args.beta)
+                        {"alpha": alpha, "beta": args.beta, "grad_clip": args.grad_clip,
+                         **strat_params},
+                        fair_alpha=alpha, fair_codes=fair_codes, fair_beta=args.beta,
+                        fair_strata=fair_strata, fair_stratum=(
+                            None if fair_strata is None else args.fair_stratum),
+                        fair_weights=fair_weights, fair_min_cell=args.fair_min_cell)
 
     # 결과는 run_point가 outputs/results.csv에 남긴다(예전 fairloss_tradeoff.csv).
     # 여러 곡선(attribute·beta·grad_clip·blind 조합)이 한 테이블에 공존하고, 같은
@@ -101,11 +159,15 @@ def main():
             & df["metric"].isin(["mcc", "selection_rate_gap",
                                  "selection_rate_amplification"])]
     view = results.wide(df, index=["tag"])
-    for knob in ["alpha", "beta", "grad_clip"]:
+    # 층 노브도 표에 싣는다. 라벨이 config 키를 하나라도 빼면 서로 다른 실험이
+    # 조용히 한 행으로 합쳐진다 -- dashboard가 edge_mode를 빼먹고 셋을 평균해
+    # 어디에도 없는 0.2620을 찍은 것과 같은 함정이다.
+    for knob in ["alpha", "beta", "grad_clip", "fair_stratum", "fair_min_cell"]:
         view[knob] = results.param(df.drop_duplicates("tag"), knob).values
     view = view.sort_values(["grad_clip", "beta", "alpha"])
     print(f"\n[save] {results.results_path()} (family=mitigate_loss)")
-    print(view[["alpha", "beta", "grad_clip", "mcc", "selection_rate_gap",
+    print(view[["alpha", "beta", "grad_clip", "fair_stratum", "fair_min_cell",
+                "mcc", "selection_rate_gap",
                 "selection_rate_amplification"]].round(4).to_string(index=False))
     print("\n[해석] alpha를 키우면 격차는 줄고 정확도는 떨어져야 한다. 08(후처리) 곡선과 "
           "같은 축에 겹쳐 '같은 공정성 수준에서 어느 쪽이 정확한가'를 본다. 이 방식은 "

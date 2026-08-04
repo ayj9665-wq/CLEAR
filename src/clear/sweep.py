@@ -94,6 +94,57 @@ def setup(args):
                  val_t=val_t, test_t=test_t, test_idx=test_t.cpu().numpy(), hp=hp)
 
 
+# 시드별 격차를 따로 기록하는 지표. 요약 행에는 이 셋의 **시드 표준편차**가 붙는다.
+SEED_GAP_METRICS = ["selection_rate_gap", "selection_rate_amplification",
+                    "fpr_gap", "fpr_amplification"]
+
+
+def _seed_gap_std(su, seed_rows, pred_df, groups, group_set, family, tag):
+    """시드별 격차를 재서 results.csv에 남기고, 요약 행에 붙일 시드 std를 돌려준다.
+
+    **부트스트랩 CI는 test 표집만 덮고 학습 무작위성은 안 덮는다.** 이 저장소는 그것을
+    이미 알고 있었지만(mitigate_graph에서 같은 blind geo 설정이 증폭 1.48/1.33/1.37로
+    나왔다) 완화 곡선 쪽에는 배관이 없었다 — 덤프가 시드 평균 proba 한 벌이라
+    격차에는 std를 붙일 자리가 없었다. 그래서 alpha 사다리의 흔들림이 개입의 성질인지
+    학습 잡음인지 CI만 보고는 판정할 수 없었다.
+
+    비용은 거의 없다. 격차는 4칸(TN/FP/FN/TP) 카운트만 있으면 나오고, 시드별 예측은
+    이미 메모리에 있다(train_one이 돌려준 _test_proba). 덤프 형식은 재정의하지 않고
+    평균 덤프의 프레임에서 proba/pred 두 열만 갈아 끼운다.
+    """
+    if len(seed_rows) < 2:
+        return {}
+    per_seed, recorded = {m: [] for m in SEED_GAP_METRICS}, []
+    df = pred_df.copy()
+    for r in seed_rows:
+        proba = r["_test_proba"]
+        df["proba"] = proba
+        df["pred"] = (proba >= 0.5).astype(int)
+        cnt, _ = F.joint_counts({"_": df}, su.attr_col)
+        # n_boot=1: 여기서 필요한 것은 점추정뿐이다(CI는 요약 행이 갖는다).
+        pt, st = F.gap_samples(cnt, F.bootstrap_joint(cnt, n_boot=1), groups)
+        row = F.gap_row(st, pt, groups, group_set)
+        vals = {m: row[m] for m in SEED_GAP_METRICS if m in row}
+        for m, v in vals.items():
+            per_seed[m].append(v)
+        recorded += results.rows(family, vals, model="graphsage", tag=tag,
+                                 seed=r["seed"], attribute=su.attr, blind=su.blind,
+                                 group_set=group_set, params=_seed_params(r))
+    if recorded:
+        results.write(recorded)
+    out = {m: float(np.std(v, ddof=1)) for m, v in per_seed.items() if len(v) > 1}
+    print("[seed] 격차 시드 std  " + "  ".join(
+        f"{m}={out[m]:.4f}" for m in SEED_GAP_METRICS if m in out)
+        + "  <- 부트스트랩 CI가 못 덮는 축")
+    return out
+
+
+def _seed_params(row):
+    """시드 행의 params. 정확도 시드 행(results.from_run)과 **같은 KEY**여야
+    같은 실행의 두 지표가 한 행 묶음으로 붙는다."""
+    return {k: row[k] for k in results.RUN_PARAMS if row.get(k) is not None}
+
+
 def run_point(su, tag, data, family, params, notes=None, **train_kwargs):
     """스윕 한 점: seed 반복 학습 → 예측 덤프 → 격차 재진단 → 결과 기록.
 
@@ -145,6 +196,7 @@ def run_point(su, tag, data, family, params, notes=None, **train_kwargs):
           if f"{m}_lo" in gap}
     std = ({"mcc": float(np.std([r["mcc"] for r in seed_rows], ddof=1))}
            if len(su.seeds) > 1 else {})
+    std.update(_seed_gap_std(su, seed_rows, pred_df, groups, group_set, family, tag))
 
     results.write(results.rows(
         family, core, model="graphsage", tag=tag, seed=None, attribute=su.attr,

@@ -234,6 +234,12 @@ GNN_NUM_NEIGHBORS = [25, 10]
 GNN_EVAL_BATCH_SIZE = 2048
 # 배치 안에서 이 수보다 적은 그룹은 공정성 벌점에서 뺀다(그룹평균이 잡음).
 GNN_FAIR_MIN_COUNT = 100
+# 층 표준화 벌점(mitigate_loss --fair_stratum)의 **(층 x 그룹) 셀** 하한.
+# GNN_FAIR_MIN_COUNT가 그룹에 거는 하한이라면 이것은 셀에 거는 하한이다 — 층을
+# 쪼개면 셀이 그만큼 작아지므로 하한도 작아야 한다. 하한을 올릴수록 벌점에
+# 참여하는 층이 줄어드는 것이 **개입의 정의를 바꾸는** 일이라(층표준화벌점 계획서
+# §4-4), 사후에 고르지 않고 격자로 훑는다. 기본값은 격자의 낮은 쪽이다.
+GNN_FAIR_MIN_CELL = 20
 
 # ---- 공정성 진단 (experiments/diagnose_fairness.py / clear.fairness) ----
 # 'Unknown'은 인구집단이 아니라 기록 누락 코드라 격차(max-min) 계산에서 뺀다.

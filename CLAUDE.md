@@ -119,6 +119,13 @@ python -m experiments.mitigate_graph      # -> results.csv (family=mitigate_grap
 python -m experiments.mitigate_loss       # -> results.csv (family=mitigate_loss; fairness penalty in the training loss)
 python -m experiments.mitigate_loss --beta 1.0                              # early-stop on val MCC - beta*val gap instead of val MCC alone
 python -m experiments.mitigate_loss --alphas 0 25 50 75 --seeds 42,43,44,45 # finer alpha grid near the useful range
+python -m experiments.mitigate_loss --minibatch --fair_stratum State --fair_min_cell 20 \
+       --alphas 5 10 25 50 100      # STRATIFIED penalty: within-stratum group variance,
+                                    # fixed stratum weights. Tags/dumps get _s{stratum}{floor}
+                                    # (graphsage_fairloss_a25_sstate20_mb) so they never
+                                    # overwrite the pooled-penalty curve. --fair_stratum none
+                                    # (default) is the pooled penalty, unchanged.
+                                    # County is NOT usable as the penalty stratum — see below.
 
 python -m experiments.detect_cold_blocks  # -> outputs/cold_blocks.csv (blocks with unexplained excess unsolved; family=cold_blocks)
 python -m experiments.detect_cold_blocks --blocks county hargrove --min_n 50
@@ -201,7 +208,15 @@ python -m experiments.verify_html --selftest        # prove the checker catches 
                                           # original ReferenceError, then exit
 ```
 
-There is no test suite; there is no build/lint step configured. The HTML builders
+`tests/` holds the only unit tests in the repo — `test_fairness_penalty.py` (11 cases,
+run with `pytest tests/` from the repo root). They exist because the stratified fairness
+penalty's correctness claim is an *equivalence* ("one stratum reproduces the pooled
+penalty exactly"), which is checkable on synthetic input and would otherwise be judged
+from an overnight alpha grid, where an implementation bug and a real finding look the
+same. `tests/conftest.py` puts `src/` on the path and **imports `config` before torch** —
+the reverse order dies with `OMP: Error #15` on this machine. Everything else is still
+covered by build-time self-checks, not tests, and there is no build/lint step configured.
+The HTML builders
 (`build_web_map`, `build_story_page`, `dashboard`) each carry their own build-time
 self-check instead — external-request scan, size budget, data invariants, and
 `_htmlcheck.node_check` (inline-JS syntax via `node --check`, skipped with a notice when
@@ -1043,7 +1058,26 @@ the pooled gap, so it is not even monotone in the standardized metric (α=25/50/
 0.639/0.701/0.590) — pressing harder is the wrong instrument, and α>100 is where three
 states documented optimization instability. The principled fix is a **stratified penalty**
 (`fairness_penalty` over within-stratum group variance), which is a new intervention needing
-its own pre-registration, not a re-tune. The bias direction is not adverse: α=100's
+its own pre-registration, not a re-tune.
+
+**That penalty is now built and pre-registered; the alpha grid has not been judged yet.**
+(`reports/층표준화벌점_계획서_CLEAR.md`, tag `pre-stratified-penalty`.) `fairness_penalty`
+takes `strata`/`weights`/`min_cell`; `strata=None` dispatches to the original body verbatim,
+and a test asserts one stratum reproduces it numerically. Four things about the design are
+load-bearing. **It presses on `State` and is judged on county** — 3,042 counties against a
+batch of 8,192 training nodes is 0–2 nodes per county, so the within-stratum group mean
+would be one sample; pressing the stratum you *don't* judge on also removes the circularity.
+**Stratum weights are computed once over the training nodes and fixed**, then renormalized
+over strata present in the batch — the same rule `standardized_gap_row` uses, for the same
+reason (zeroing an absent stratum treats "not observed" as "observed as 0"). **The cell floor
+decides the effective standardization population**, and only half of "fixed weights" survives
+it: which strata clear `(stratum × group) ≥ min_cell` is data-dependent, so the penalty
+standardizes over ~32 states at floor 20 and ~23 at floor 50 while the *measurement* uses 39
+— measured at 26.8 strata/step nationally, recorded per run as `fair_strata_per_step`. And
+**`clear.sweep` now diagnoses each seed separately** (`_seed_gap_std`), because the bootstrap
+CI covers test-set sampling only: two seeds of one three-state config gave FPR amplification
+0.677 vs 0.543, wider than the 0.06 wobble that motivates the track, so a gate read off CIs
+alone could not tell the intervention from training noise. The bias direction is not adverse: α=100's
 within-state race gap is still negative, so `E_b` is overstated in high-Black-share counties
 and **`z ↔ black_share = +0.290` is a lower bound**.
 

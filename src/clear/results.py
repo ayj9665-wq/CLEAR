@@ -51,7 +51,11 @@ ACCURACY = ["auc", "mcc", "f1", "sensitivity", "specificity",
             "balanced_accuracy", "precision"]
 FAIRNESS = ["base_rate_gap", "selection_rate_gap", "selection_rate_amplification",
             "tpr_gap", "tpr_amplification", "fpr_gap", "fpr_amplification"]
-RUNINFO = ["best_epoch", "train_seconds", "n_params", "best_val_gap", "n_eval"]
+RUNINFO = ["best_epoch", "train_seconds", "n_params", "best_val_gap", "n_eval",
+           # 층 벌점의 실효 표준화 인구 — 스텝당 벌점에 참여한 층 수. 노브가 아니라
+           # 실행이 만들어낸 값이라 params가 아니고, 셀 하한을 올렸을 때 개입이
+           # 대형 층으로 쏠리는 정도가 여기 남는다(층표준화벌점 §4-4).
+           "fair_strata_per_step"]
 # '적용' 단계(미해결 사건 군집화)의 지표. long format이라 지표 추가는 열이 아니라
 # 행이 느는 일이므로 기존 결과는 손대지 않는다 -- 이 목록을 두는 이유는 summarize가
 # canonical 이름만 집계하도록 하기 위해서다.
@@ -184,6 +188,8 @@ def write(new_rows, path=None):
 RUN_PARAMS = ["edge_type", "edge_mode", "k_neighbors", "hidden_dim", "num_layers",
               "dropout", "lr", "weight_decay", "aggr", "max_epochs", "patience",
               "val_size", "fair_alpha", "fair_beta", "grad_clip",
+              # 층 벌점을 안 쓰는 실행에서는 둘 다 None이라 params에 안 들어간다.
+              "fair_stratum", "fair_min_cell",
               # full-batch 실행에서는 셋 다 None이라 params에 안 들어간다 --
               # 기존 행의 KEY가 유지된다(edge_mode·scope와 같은 규약).
               "minibatch", "batch_size", "num_neighbors"]
