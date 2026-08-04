@@ -98,5 +98,6 @@ def node_check(html: str) -> tuple[bool, str]:
         return False, ("[검사] JS 문법 오류 " + str(len(errs)) + "건 (node " + ver
                        + ")\n  " + "\n  ".join(errs)
                        + "\n  줄 번호는 해당 <script> 블록 안에서의 위치다.")
-    return True, (f"[검사] JS 문법 OK (node {ver}, 블록 {len(blocks)}개) "
-                  f"- 문법만 본다. DOM 동작은 별개다.")
+    return True, (f"[검사] JS 문법 OK (node {ver}, 블록 {len(blocks)}개) - 문법만 "
+                  f"본다. DOM 동작은 `python -m experiments.verify_html` 로 따로 "
+                  f"검사할 것.")

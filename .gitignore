@@ -57,3 +57,6 @@ outputs/models/
 outputs/*/models/
 # 대시보드(자체 완결 HTML). 지도·그림과 같은 취급 -- 커밋된 결과 CSV에서 재생성된다.
 outputs/dashboard.html
+
+# DOM 검증용 개발 의존(jsdom). 산출물 빌드에는 필요 없다.
+node_modules/

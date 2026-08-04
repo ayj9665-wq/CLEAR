@@ -188,6 +188,17 @@ CLEAR_SCOPE=national python -m experiments.build_story_page
                                           # -> outputs/national/web/clear_story.html
                                           # scroll-narrative portfolio page; defaults
                                           # --src cold_blocks_cv5.csv --simplify_km 1.5
+
+npm install                               # once, at the repo root: jsdom (dev only)
+CLEAR_SCOPE=national python -m experiments.verify_html
+                                          # runs the built HTML in jsdom, drives every
+                                          # control, and cross-checks screen counts
+                                          # against cold_blocks*.csv. NOT part of any
+                                          # build — the dashboard must stay buildable
+                                          # on pandas+numpy alone
+python -m experiments.verify_html --only map        # one kind
+python -m experiments.verify_html --selftest        # prove the checker catches the
+                                          # original ReferenceError, then exit
 ```
 
 There is no test suite; there is no build/lint step configured. The HTML builders
@@ -1343,14 +1354,41 @@ in a headless browser. So the rule from the figure bugs generalizes to HTML: **t
 validator checks what you told it to check — open the artifact and look at it**, and for
 a page, "look" means query the DOM, not read the source.
 
-**DOM verification is still not wired** — that is the open item, and the assertions it
-needs are already determined by the bug above: zero uncaught errors on load; non-empty
-legend and ranked table; and the same assertions again **after driving the controls**,
-since `legend()` runs on every repaint and the failure landed after the first paint. Of the
-four artifacts, `dashboard.html` uses no browser-only API at all and the maps use only
-`createElementNS`, so jsdom covers three — including the two that carried the bug.
-`clear_story.html` needs a real browser (`IntersectionObserver`, `requestAnimationFrame`,
-`getBoundingClientRect`).
+**`experiments/verify_html.py` closes that, and its assertions are read off the bug.**
+`_domprobe.js` runs the page in jsdom (`runScripts: "dangerously"`), collects every
+uncaught error, then **drives the controls** — every slider level, every layer button, the
+table toggle, every dashboard tab — and dumps observations as JSON; `verify_html.py` does
+the asserting in Python, because the CSV cross-check belongs in the language that owns the
+data. The four requirements: zero uncaught errors (this alone catches the shipped bug),
+non-empty legend and ranked table, **the same assertions again after each interaction**
+(`legend()` runs on every repaint and the failure landed after the first paint, so a
+load-only check would miss it), and screen counts equal to counts recomputed from
+`cold_blocks*.csv`.
+
+**It is verified against the real bug, not assumed to work.** `--selftest` re-injects the
+original `const d=D[LV[li]];` into a copy of the shipped map and fails if the checker still
+passes; it currently reports the defect as 28 findings, the first being the uncaught
+`ReferenceError`. It runs by default before the real artifacts — same discipline as
+deliberately planting a syntax error to prove `node --check` fires. Coverage is jsdom's:
+the dashboard uses no browser-only API and the maps use only `createElementNS`, so three of
+four artifacts are covered — including both that carried the bug. `clear_story.html` needs
+a real browser (`IntersectionObserver`, `requestAnimationFrame`, `getBoundingClientRect`)
+and is not checked here.
+
+**The CSV cross-check immediately found a defect that is not in the map at all.** Screen
+counts ran 3 short at n≥20 and 1 short at n≥50/100. Two are legitimate — `City` is
+`Repressed` (the agency suppressed the county name), so there is no geography to draw and
+the checker reports them as an expected exclusion. The third is real: **`Dade` and
+`Miami-Dade` are the same county**, renamed in 1997, and both names are present as separate
+blocks. `clear.counties.ALIASES` maps them to one FIPS at *map* time, so `color_tables`'s
+`drop_duplicates("fips")` silently discards one — but the deeper problem is upstream.
+`detect_cold_blocks` blocks on raw `["State", "City"]` (as do `county_race_residual` and
+`audit_resources`), so the county was **split into two blocks and tested twice**:
+Miami-Dade n=523 z=+6.86 **cold**, Dade n=9,054 z=+1.12 not significant. Combined SMR is
+about 1.035 against Miami-Dade's 1.408, so the cold verdict is most likely an artifact of
+the name split, and BH FDR was computed over a set containing a duplicated unit. The
+alias belongs upstream, in blocking, not in the drawing layer — `verify_html` fails on this
+by design until it is fixed, because a green check here would be a lie.
 
 **Two national maps ship, and the cross-fit one is primary.** `map_national.html` is built
 from `cold_blocks_cv5.csv` (1,800 counties carry data at n≥20); `map_national_test.html` is

@@ -1,0 +1,8 @@
+{
+  "name": "clear-html-verify",
+  "private": true,
+  "description": "배포 HTML의 DOM 동작 검증에만 쓰는 개발 의존. 산출물 빌드에는 필요 없다.",
+  "devDependencies": {
+    "jsdom": "^25.0.0"
+  }
+}
