@@ -1266,10 +1266,35 @@ of "undetermined" (a statement about investigation, not about the case) plus the
 within-county race dependence, which invalidates `C` as a control whether the mechanism is
 `Y → C` or `D → C`.
 
-**One execution limit worth knowing before extending this.** There is **no national
-XGBoost dump and none can be made** — the four committed flat dumps are the *three-state*
-sample and `train_baseline.py` is gone — so the flat-vs-graph discriminating test runs at
-three-state scope only.
+**The national flat baseline now exists, and it revises half of the mechanism claim.**
+`train_baseline.py` was restored from `96d1dd1` and run at national scope only — this is
+the one thing on the backlog that genuinely needed training, and it is **additive**: it
+writes new dumps and leaves every GNN model untouched, so `cold_blocks`, the maps and `ρ`
+did not move. The three-state dumps are **never regenerated**; xgboost went 2.x → 3.3.0 and
+a changed prediction would shift the committed headline. Eleven national dumps now share
+one test split (191,537 rows).
+
+| blind, White-vs-Black | pooled amplification | State-standardized | MCC |
+|---|---|---|---|
+| **GraphSAGE (geo)** | **1.805** [1.72, 1.90] | **1.558** [1.46, 1.67] | **0.3133** |
+| XGBoost | 1.632 [1.55, 1.72] | 1.301 [1.20, 1.41] | 0.2989 |
+| LogReg | 1.429 [1.34, 1.51] | 1.064 [0.98, 1.16] | 0.2638 |
+
+**One half of the three-state finding replicates and the other does not.** The GNN does
+amplify race more than either flat model — paired GraphSAGE−XGBoost **+0.173 [+0.135,
++0.212]** pooled, **+0.257 [+0.208, +0.310]** standardized, both significant, same
+direction as the three-state +0.82. But *"close the direct path and the flat models stop
+amplifying"* is **false at national scale**: blind XGBoost goes 0.67 → **1.632** and blind
+LogReg 0.05 → **1.429**. That is the same scaling already measured on the feature side —
+blind-X race recovery AUC 0.7001 → 0.7770 — so nationally the graph is **an increment on
+top of a strong feature-proxy channel**, not the sole surviving route. Three states made
+the graph look like the only carrier because the proxy channel was weak in that sample.
+
+The accuracy side replicates cleanly: blind MCC +0.0144 over XGBoost against a GNN seed std
+of 0.00061, **23.6×**. And sighted the sign flips — GraphSAGE 2.245 *below* XGBoost 2.544
+and LogReg 2.785 (paired −0.739 and −0.980, both significant), where three states could not
+separate them (−0.04). Handed the attribute directly, the flat models lean on it harder;
+the graph's cost only becomes visible once the direct path is shut.
 
 **That test is now paired, and it says the two models land on opposite sides of zero.**
 (`reports/짝지은표준화대조_계획서_CLEAR.md`, pre-registered `278dd7a`, tag

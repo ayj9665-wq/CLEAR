@@ -1,13 +1,16 @@
 # 모델 보고서 — XGBoost (flat baseline)
 
 - 작성자: 안윤지 · 작성일: 2026-07-23
-- 파이프라인 위치: `src/experiments/train_baseline.py` (`model=xgboost`) — **현재 저장소에
-  없다**(커밋 `96d1dd1`에서 복구). 결과는 `outputs/results.csv`(family=`train`)와 커밋된
-  예측 덤프 `outputs/predictions/xgboost[_blind].csv`에 남아 있다
+- 파이프라인 위치: [experiments/train_baseline.py](../src/experiments/train_baseline.py)
+  (`model=xgboost`). 한동안 저장소에서 제거돼 있었고 2026-08-04에 커밋 `96d1dd1`에서
+  **복원**했다(전국 평면 baseline이 필요해졌기 때문). 3개 주 덤프
+  `outputs/predictions/xgboost[_blind].csv`는 그 사이 재생성이 불가능해 커밋돼 있고,
+  **재실행으로 덮어쓰지 않는다** — xgboost 2.x에서 3.x로 바뀌어 예측이 달라지면
+  헤드라인 대조(+0.82)가 흔들린다. 복원한 학습기는 전국 스코프에서만 돌렸다
 - 벤치마크/캐비엇 공통 문서: [모델벤치마크_선행연구비교.md](모델벤치마크_선행연구비교.md)
 
 
-> **스코프 주의 (2026-07-28)**: 이 보고서는 3개 주(CA+TX+MI) 표본 전용이다. 전국 확장에서는 평면 baseline을 다시 만들지 않았으므로(`train_baseline.py`가 커밋 `96d1dd1`에서 제거됨) **이 모델의 전국 수치는 존재하지 않는다.** 전국 값이 있는 것은 GraphSAGE뿐이다.
+> **스코프 주의 (2026-08-04 갱신)**: 이 보고서의 본문 수치는 3개 주(CA+TX+MI) 표본이다. **전국 수치는 2026-08-04에 생겼다** — `train_baseline.py`를 커밋 `96d1dd1`에서 복원해 전국(638,454행)에서 다시 학습했고, 덤프는 `outputs/predictions/national/`에, 지표는 `results.csv`(params.scope=national)에 있다. 3개 주 수치와 **직접 비교하지 말 것** — 표본도 작동점도 다르다.
 
 ## 1. 역할 — "GNN이 넘어야 할 기준선"
 
