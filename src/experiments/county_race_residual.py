@@ -69,7 +69,7 @@ import numpy as np
 import pandas as pd
 
 import config as C
-from clear import predictions, results
+from clear import counties, predictions, results
 
 # 대비할 두 그룹. 전국 test에서 min_n=5000을 넘는 것이 이 둘뿐이고(Asian/PI는 2,940),
 # 공정성 벌점(alpha=100)이 누른 그룹집합과 같아야 잔차와 개입이 같은 축에 놓인다.
@@ -88,6 +88,9 @@ def load_frame(model, calibrate_mode):
     df = dump.join(sample[["State", "City"]], on="row_index")
     if df[["State", "City"]].isna().any().any():
         raise ValueError("블록 키에 결측: row_index 정렬이 깨졌다.")
+    # 같은 카운티의 옛 이름/새 이름을 합친다(detect_cold_blocks와 같은 정의여야
+    # rho와 z가 같은 단위 위에 있다). clear.counties.canonicalize 참조.
+    df = counties.canonicalize(df)
     p, cal = predictions.calibrate(dump["proba"].values, dump["y_true"].values,
                                   calibrate_mode)
     df["p_cal"] = p

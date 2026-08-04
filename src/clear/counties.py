@@ -129,6 +129,72 @@ def normalize(name):
     return " ".join(s.split())
 
 
+def canonicalize(df, state_col="State", city_col="City", verbose=True):
+    """같은 카운티의 다른 이름을 하나로 모아 State/City 열을 정본 표기로 바꾼다.
+
+    **분석 단계 전용이고, 파이프라인(01~04)에 넣으면 안 된다.** `City`는 `geo`
+    엣지의 블로킹 키(`config.GEO_BLOCK_COLS`)라 거기서 합치면 그래프가 바뀌고
+    전국 재학습이 필요해진다. 여기서 합치는 것은 안전하다 -- SMR은 카운티 안
+    사건들의 O와 E의 합이고, 합산은 p̂이 어떻게 만들어졌든 유효하다. 모델이
+    카운티를 모르는 것은 의도된 설계이므로 모델의 블로킹이 카운티의 정의가 아니다.
+
+    왜 필요한가. `ALIASES`는 오랫동안 **그리는 단계에서만** 적용됐다. 그래서
+    플로리다 `Dade`(9,054건)와 `Miami-Dade`(523건)가 같은 카운티인데 별개 블록으로
+    검정됐고, 523건짜리 쪽이 z=+6.86으로 cold 판정을 받았다(합치면 SMR 1.408 ->
+    1.035). 지도는 `drop_duplicates('fips')`로 하나를 조용히 버렸다. 버지니아
+    `Clifton Forge`(3건) + `Alleghany`(19건)도 같은 상태이며, 합치면 22건이라
+    표본 하한 20을 새로 넘는다.
+
+    표기 규칙: 정규화형이 정본 키와 같은 원래 이름을 대표로 쓴다. 그런 이름이
+    데이터에 없으면(개명 후 이름이 아예 안 나타나는 경우) 원래 표기를 유지한다 --
+    그때는 합칠 대상도 없으므로 아무 것도 바뀌지 않는다.
+    """
+    out = df.copy()
+    state = out[state_col].astype(str).map(lambda s: STATE_ALIASES.get(s, s))
+    norm = out[city_col].map(normalize)
+    key = pd.Series([ALIASES.get(k, k[1]) for k in zip(state, norm)],
+                    index=out.index)
+
+    # (주, 정본키) -> 대표 표기. 정규화형이 정본키와 일치하는 원래 이름을 고른다.
+    disp = {}
+    for (st, k, nm, orig) in zip(state, key, norm, out[city_col]):
+        cur = disp.get((st, k))
+        if cur is None or (nm == k and normalize(cur) != k):
+            disp[(st, k)] = orig
+
+    new_city = pd.Series([disp[(s, k)] for s, k in zip(state, key)],
+                         index=out.index)
+    if verbose:
+        moved = out.loc[new_city != out[city_col], [state_col, city_col]]
+        if len(moved):
+            for (st, ct), n in moved.value_counts().items():
+                print(f"[canon] {st}/{ct} -> {disp[(st, ALIASES.get((st, normalize(ct)), normalize(ct)))]}"
+                      f"  ({n:,}행)")
+    out[state_col] = state
+    out[city_col] = new_city
+    return out
+
+
+def assert_one_row_per_fips(tab, where=""):
+    """한 FIPS에 행이 둘 이상이면 죽는다.
+
+    지도의 `drop_duplicates('fips')`는 둘 중 하나를 **조용히** 버린다. 그렇게
+    Dade/Miami-Dade가 석 달을 살아남았고, 화면의 수를 CSV와 대조해서야 드러났다.
+    조용한 유실을 시끄러운 실패로 바꾸는 것이 이 함수의 전부다.
+    """
+    ok = tab.dropna(subset=["fips"])
+    dup = ok[ok.duplicated("fips", keep=False)]
+    if len(dup):
+        cols = [c for c in ("State", "City", "fips", "n", "z", "flag")
+                if c in dup.columns]
+        raise SystemExit(
+            f"[에러] 같은 FIPS에 행이 둘 이상이다{(' -- ' + where) if where else ''}. "
+            f"하나가 조용히 버려진다.\n"
+            f"  같은 카운티의 다른 이름이면 clear.counties.ALIASES 에 넣고 "
+            f"분석 단계에서 canonicalize()를 부를 것.\n"
+            + dup[cols].to_string(index=False))
+
+
 def fips_table():
     """Census 코드 파일 -> DataFrame[state, county_norm, fips]."""
     path = _cache(COUNTY_FIPS_URL, "national_county2020.txt")

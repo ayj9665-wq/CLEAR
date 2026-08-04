@@ -422,6 +422,12 @@ def main():
         print(f"[경고] 미매칭 {len(missing)}건 - clear.counties.ALIASES 확인:")
         print(missing.to_string(index=False))
     tab = tab[matched].copy()
+    # color_tables가 drop_duplicates('fips')로 하나를 **조용히** 버린다. 그렇게
+    # Dade/Miami-Dade가 석 달을 살아남았고 화면의 수를 CSV와 대조해서야 드러났다.
+    # 조용한 유실을 시끄러운 실패로 바꾼다 -- 수준마다 따로 봐야 한다(같은 카운티가
+    # 여러 min_n 행을 갖는 것은 정상이다).
+    for lv, g in tab.groupby("min_n"):
+        CT.assert_one_row_per_fips(g, where=f"{args.src} min_n={lv}")
 
     state_fips = set(tab["fips"].str[:2])
     paths, height = build_paths(state_fips, args.simplify_km)

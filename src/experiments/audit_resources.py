@@ -81,7 +81,7 @@ import numpy as np
 import pandas as pd
 
 import config as C
-from clear import results
+from clear import counties, results
 
 LEOKA_PATH = (C.ROOT / "dataset" / "geo" / "LEOKA_parquet_1960_2024_year"
               / "leoka_yearly_1960_2024.parquet")
@@ -112,6 +112,10 @@ def load_county_resources():
                          columns=["ori", "year"] + list(MEASURES.values()))
     lo = lo[lo.year.between(raw.Year.min(), raw.Year.max())]
     lo = lo.drop_duplicates(["ori", "year"]).set_index(["ori", "year"])
+
+    # 카운티 정본화. cold_blocks / county_race_residual과 **같은 정의**여야 조인이
+    # 맞는다 -- 한쪽만 합치면 Miami-Dade가 한쪽에만 있어 조용히 빠진다.
+    raw = counties.canonicalize(raw)
 
     idx = pd.MultiIndex.from_arrays([raw["Agency Code"], raw["Year"]])
     for name, col in MEASURES.items():

@@ -41,7 +41,7 @@ import sys
 import pandas as pd
 
 import config as C
-from clear import fairness, predictions
+from clear import counties, fairness, predictions
 
 SENS_ATTRS = [f"sens__{a}" for a in C.SENSITIVE_COLS]   # Victim Race, Victim Sex
 
@@ -107,6 +107,11 @@ def main():
         missing_cols = [c for c in cols if c not in sample.columns]
         if missing_cols:
             sys.exit(f"[에러] sample.parquet에 열 없음: {', '.join(missing_cols)}")
+        # 카운티 층은 cold_blocks / county_race_residual과 **같은 카운티 정의**를
+        # 써야 한다. 별칭이 안 합쳐지면 같은 카운티가 두 층이 되고, 층당 그룹 하한
+        # 때문에 둘 다 탈락할 수도 있다. clear.counties.canonicalize 참조.
+        if {"State", "City"} <= set(cols):
+            sample = counties.canonicalize(sample)
         # 복합 층은 '|'로 이어 붙인다. standardized_gap_row는 층 라벨을 문자열로만
         # 다루므로(strat_counts가 pd.unique + get_indexer) clear.fairness 수정이 없다.
         strat_label = "|".join(cols)

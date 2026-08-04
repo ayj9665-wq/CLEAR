@@ -1384,11 +1384,27 @@ blocks. `clear.counties.ALIASES` maps them to one FIPS at *map* time, so `color_
 `drop_duplicates("fips")` silently discards one — but the deeper problem is upstream.
 `detect_cold_blocks` blocks on raw `["State", "City"]` (as do `county_race_residual` and
 `audit_resources`), so the county was **split into two blocks and tested twice**:
-Miami-Dade n=523 z=+6.86 **cold**, Dade n=9,054 z=+1.12 not significant. Combined SMR is
-about 1.035 against Miami-Dade's 1.408, so the cold verdict is most likely an artifact of
-the name split, and BH FDR was computed over a set containing a duplicated unit. The
-alias belongs upstream, in blocking, not in the drawing layer — `verify_html` fails on this
-by design until it is fixed, because a green check here would be a lie.
+Miami-Dade n=523 z=+6.86 **cold**, Dade n=9,054 z=+1.12 not significant.
+
+**Fixed by `clear.counties.canonicalize()`, applied in the analysis layer only.**
+`detect_cold_blocks`, `county_race_residual`, `audit_resources` and
+`diagnose_fairness --stratum State,City` all call it, so the four share one county
+definition. It is deliberately **not** in the pipeline (`01`–`04`): `City` is the `geo`
+blocking key, so merging there would change the graph and force a national retrain for no
+gain. Merging at aggregation is sound anyway — SMR is O and E summed over a county's cases,
+and the sum is valid however p̂ was produced; the model having no county feature is the
+design, so its blocking is not the definition of a county.
+
+What moved: Florida merges to n=9,577 and SMR **1.408 → 1.035**, which drops the cold flag
+on the test split (38 → 37 cold) and leaves it standing but weakened on cross-fit (z 6.86 →
+2.70, q 0.0023 → 0.0334); no other block changed verdict in either table. Virginia's
+`Clifton Forge` (3) + `Alleghany` (19) = 22 **newly clears the n≥20 floor**, so the cv5
+county count stays 1,803 (−1 +1). Aggregates moved in the third decimal only —
+`z ↔ black_share` +0.290 → +0.288, `ρ` +0.083 → +0.084, county-standardized amplification
+0.662 → 0.671 with the CI upper bound still under 1. Recurrence is blocked by
+`clear.counties.assert_one_row_per_fips()`, which **kills the map build** when one FIPS has
+two rows: a silent `drop_duplicates` is what kept this alive for three months, so turning
+silent loss into loud failure is half the fix.
 
 **Two national maps ship, and the cross-fit one is primary.** `map_national.html` is built
 from `cold_blocks_cv5.csv` (1,800 counties carry data at n≥20); `map_national_test.html` is

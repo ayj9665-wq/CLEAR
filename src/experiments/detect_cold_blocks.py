@@ -103,7 +103,7 @@ import numpy as np
 import pandas as pd
 
 import config as C
-from clear import predictions, results
+from clear import counties, predictions, results
 
 # 블록 키. county는 지도(카운티 코로플레스)와 직결되고, hargrove는 MAP 알고리즘의
 # 원래 키(지리 + 수법 + 피해자 성별)에 가장 가깝다.
@@ -238,6 +238,12 @@ def main():
     df = dump.join(sample[keys], on="row_index")
     if df[keys].isna().any().any():
         raise ValueError("블록 키에 결측: row_index 정렬이 깨졌다.")
+
+    # 같은 카운티의 옛 이름/새 이름을 합친다. 이걸 안 하면 한 카운티가 두 블록으로
+    # 나뉘어 **두 번 검정되고**, BH FDR도 중복 단위가 든 집합에서 계산된다.
+    # 별칭은 오랫동안 지도(그리는 단계)에만 적용돼 있었다 -- clear.counties 참조.
+    if {"State", "City"} <= set(keys):
+        df = counties.canonicalize(df)
 
     p_cal, cal = calibrate(dump["proba"].values, dump["y_true"].values, args.calibrate)
     df["p_cal"] = p_cal
