@@ -1280,6 +1280,42 @@ of "undetermined" (a statement about investigation, not about the case) plus the
 within-county race dependence, which invalidates `C` as a control whether the mechanism is
 `Y → C` or `D → C`.
 
+**`experiments/returna_crosscheck.py` bounds how much of `ρ` could be recording, using an
+independent second measurement.** (`reports/ReturnA교차검증_계획서_CLEAR.md`, tag
+`pre-returna`.) UCR Return A (openICPSR **100707** — a third deposit, distinct from SHR's
+100699 and LEOKA's 102180) is the same agency counting the same homicides and clearances on
+a different form, so a disagreement between it and `Crime Solved` cannot be discrimination
+or resourcing — by construction it is a recording problem, and its size caps the
+contamination. `(ORI, year)` joins at **100.0%**, matching LEOKA's precedent on the same
+axis. The shipped version is *wide monthly* (one row per agency-year, months as columns,
+1,448 of them), so the loader sums the twelve `{MON}_ACT_MURDER` / `_CLR_MURDER` columns and
+reads only 27 of them; `MANSLAUGHTER` is excluded because Part I `murder` already means
+murder and nonnegligent manslaughter while the separate column is negligent.
+
+**The verdict is the pre-registered second row: state the bound, keep `ρ`.** Recorded
+homicide counts agree — `SHR/ReturnA` median **1.029**, so the heaviest scenario (the sample
+itself is biased) does not fire. Clearance rates disagree substantially — `d = q_RA − q_SHR`
+median **−0.0913** — but **`corr(d, black_share) = +0.013 [−0.136, +0.052]`, i.e. zero**, so
+the disagreement carries no racial pattern. Worst case, with the entire measured error piled
+onto one race, `ρ = +0.0819` moves to **[−0.0658, +0.2328]**: the sign does not survive that
+extreme, and nothing supports the extreme. So the sibling reading of the SHR `+4.1pp` holds
+but is **not promoted**, and the artifact reading is not excluded either. Read `d`'s sign
+with care — `Crime Solved` is a snapshot that includes clearances years later while Return A
+books them in the month they happen and the file ends in 2016, so part of −0.091 is
+structural censoring rather than error. That is why this track yields an interval and not a
+point estimate. One new by-product: `corr(SHR/ReturnA, black_share) = −0.240 [−0.294,
+−0.196]` — coverage itself is not race-neutral, at 3% overall magnitude.
+
+Three defects surfaced while running it, all of the plausible-but-wrong kind. `find_source`
+expanded a directory into its file list and read **only the 1960 file**, giving G1 = 0% —
+and the pre-registered failure condition merely *warned* and carried on, saving a table full
+of NaN. It now aborts. `MONTHS_REPORTED` is a sentence (`"december is the last month
+reported"`), not a number, so `to_numeric` would silently mark every agency-year as
+unreported. And the contamination bound clipped `d` at zero, which erased essentially every
+county's error because the measured median is **negative**; fixing the sign moved the bound
+from [+0.039, +0.164] to **[−0.066, +0.233]**, i.e. across zero — an error large enough to
+change the conclusion.
+
 **The national flat baseline now exists, and it revises half of the mechanism claim.**
 `train_baseline.py` was restored from `96d1dd1` and run at national scope only — this is
 the one thing on the backlog that genuinely needed training, and it is **additive**: it

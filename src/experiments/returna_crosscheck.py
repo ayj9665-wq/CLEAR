@@ -39,6 +39,7 @@ experiments/returna_crosscheck.py -- `Crime Solved`를 독립된 두 번째 측�
 """
 import argparse
 import re
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -62,17 +63,19 @@ COLUMN_PATTERNS = {
 
 def find_source(path=None):
     """Return A 파일을 찾는다. 없으면 **무엇을 받아야 하는지** 정확히 말하고 죽는다."""
+    # **디렉터리는 디렉터리로 돌려준다.** 한때 여기서 디렉터리를 그 안의 파일 목록으로
+    # 펼치고 첫 번째를 골랐는데, 연도별로 쪼개진 판본에서 1960년 파일 하나만 읽혀
+    # G1 매칭률이 0%로 나왔다. 로더가 여러 파일을 처리하므로 펼칠 이유가 없다.
     if path:
-        p = C.ROOT / path if not str(path).startswith(("/", "C:", "c:")) else path
-        cands = [p] if str(p).endswith((".parquet", ".csv", ".zip")) else sorted(
-            p.glob("*.parquet")) + sorted(p.glob("*.csv"))
+        p = Path(path)
+        cands = [p if p.is_absolute() else C.ROOT / p]
     else:
         cands = [q for pat in ("*return*a*", "*offense*known*", "*clearance*")
                  for q in GEO_DIR.glob(pat)]
-        cands = [q for c in cands for q in ([c] if c.is_file()
-                 else sorted(c.glob("*.parquet")) + sorted(c.glob("*.csv")))]
-    cands = [c for c in cands if c.is_file()]
+    cands = [c for c in cands if c.exists()]
     if cands:
+        # 파일이 여럿 든 디렉터리를 우선한다(연도 분할 판본).
+        cands.sort(key=lambda c: (c.is_file(), -len(list(c.glob("*.csv"))) if c.is_dir() else 0))
         return cands[0]
 
     raise SystemExit(
@@ -129,16 +132,93 @@ def load_shr(canonical=True):
     return raw, ory.merge(county, on=["Agency Code", "Year"], how="left")
 
 
-def load_returna(path, cols):
-    ra = (pd.read_parquet(path) if path.suffix == ".parquet"
-          else pd.read_csv(path, low_memory=False))
-    c = resolve_columns(ra.columns)
-    out = ra[[c["ori"], c["year"], c["actual"], c["cleared"], c["months"]]].copy()
-    out.columns = ["ori", "year", "ra_actual", "ra_cleared", "ra_months"]
+MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+          "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+
+# MONTHS_REPORTED는 숫자가 아니라 **문장**이다: "december is the last month reported"
+# / "no months reported". 그대로 pd.to_numeric 하면 전부 NaN이 되고, G2가 조용히
+# "전부 미보고"로 판정한다 -- 그러면 모든 카운티가 결측 팔로 빠진다.
+_MONTH_WORD = {m.lower(): i + 1 for i, m in enumerate(
+    ["january", "february", "march", "april", "may", "june", "july",
+     "august", "september", "october", "november", "december"])}
+
+
+def parse_months_reported(s):
+    """'december is the last month reported' -> 12, 'no months reported' -> 0."""
+    t = s.astype(str).str.lower()
+    out = pd.Series(np.nan, index=s.index, dtype=float)
+    out[t.str.contains("no month", na=False)] = 0.0
+    for word, num in _MONTH_WORD.items():
+        out[t.str.startswith(word, na=False)] = float(num)
+    # 이미 숫자인 판본(연 단위 파일)도 있으므로 남은 것은 숫자로 시도한다.
+    left = out.isna()
+    if left.any():
+        out[left] = pd.to_numeric(s[left], errors="coerce")
+    return out
+
+
+def load_returna(path, years=None):
+    """Return A를 (ori, year) 단위로 돌려준다.
+
+    받은 판본은 **wide monthly**다 -- 한 행이 (ORI, 연도)이고 월이 열로 펼쳐져 있다
+    (`JAN_ACT_MURDER` … `DEC_CLR_MURDER`, 총 1,458열). 필요한 것은 27열뿐이라
+    usecols로 잘라 읽는다. 연 단위 판본을 주면 패턴 탐색 경로로 떨어진다.
+
+    **MURDER만 쓰고 MANSLAUGHTER는 더하지 않는다.** UCR Return A의 murder 열은
+    "murder and nonnegligent manslaughter"(Part I)이고 별도의 manslaughter 열은
+    과실치사라, SHR이 담는 범위와 다르다. 이 선택이 맞는지는 (A) 인지 대조가
+    직접 판정한다 -- 비율이 1에서 크게 벗어나면 범위를 잘못 잡은 것이다.
+    """
+    files = ([path] if path.is_file()
+             else sorted(path.glob("*.csv")) + sorted(path.glob("*.parquet")))
+    if not files:
+        raise SystemExit(f"[에러] {path} 안에 csv/parquet이 없다.")
+
+    head = (pd.read_parquet(files[0]).columns if files[0].suffix == ".parquet"
+            else pd.read_csv(files[0], nrows=0, encoding="latin-1").columns)
+    wide = f"{MONTHS[0]}_ACT_MURDER" in set(head)
+
+    if not wide:                              # 연 단위 판본: 패턴으로 찾는다
+        c = resolve_columns(head)
+        frames = []
+        for f in files:
+            d = (pd.read_parquet(f) if f.suffix == ".parquet"
+                 else pd.read_csv(f, low_memory=False, encoding="latin-1"))
+            d = d[[c["ori"], c["year"], c["actual"], c["cleared"], c["months"]]]
+            d.columns = ["ori", "year", "ra_actual", "ra_cleared", "ra_months"]
+            frames.append(d)
+        out = pd.concat(frames, ignore_index=True)
+        out["ra_months"] = parse_months_reported(out["ra_months"])
+    else:
+        act = [f"{m}_ACT_MURDER" for m in MONTHS]
+        clr = [f"{m}_CLR_MURDER" for m in MONTHS]
+        use = ["ORI", "YEAR", "MONTHS_REPORTED"] + act + clr
+        print(f"[col] wide monthly - {len(files)}개 파일에서 {len(use)}/{len(head)}열만 읽는다")
+        frames = []
+        for f in files:
+            d = pd.read_csv(f, usecols=use, encoding="latin-1", low_memory=False)
+            d["YEAR"] = pd.to_numeric(d["YEAR"], errors="coerce")
+            # 연도를 못 읽은 행은 어느 해에도 귀속시킬 수 없다. between()이 NaN을
+            # False로 거르지만 years=None 경로에서는 살아남아 astype(int)에서 죽는다.
+            d = d[d["YEAR"].notna()]
+            if years is not None:
+                d = d[d["YEAR"].between(*years)]
+            if d.empty:
+                continue
+            frames.append(pd.DataFrame({
+                "ori": d["ORI"].astype(str).str.strip(),
+                "year": d["YEAR"].astype(int),
+                # 월 열의 합이 그 해의 인지/검거다. 결측은 0으로 두면 보고 안 한 달을
+                # "0건"으로 세게 되므로 그대로 두고 sum(skipna)이 처리하게 한다.
+                "ra_actual": d[act].apply(pd.to_numeric, errors="coerce").sum(axis=1),
+                "ra_cleared": d[clr].apply(pd.to_numeric, errors="coerce").sum(axis=1),
+                "ra_months": parse_months_reported(d["MONTHS_REPORTED"]),
+            }))
+        out = pd.concat(frames, ignore_index=True)
+
     out["ori"] = out["ori"].astype(str).str.strip()
-    for col in ("ra_actual", "ra_cleared", "ra_months"):
-        out[col] = pd.to_numeric(out[col], errors="coerce")
-    # 같은 (ori, year)가 여러 행이면 합친다(월 단위 파일을 준 경우의 방어).
+    out["year"] = pd.to_numeric(out["year"], errors="coerce").astype("Int64")
+    # 같은 (ori, year)가 둘 이상이면 합친다(판본에 따라 분할돼 있을 수 있다).
     return out.groupby(["ori", "year"], as_index=False).agg(
         ra_actual=("ra_actual", "sum"), ra_cleared=("ra_cleared", "sum"),
         ra_months=("ra_months", "max"))
@@ -172,12 +252,19 @@ def contamination_bound(county, rho_tab):
     m = m[np.isfinite(m["d"])].copy()
     eps = 1e-9
     out = {}
-    for side, sign in (("black", 1.0), ("white", -1.0)):
-        # d>0 이면 SHR이 검거를 적게 잡았다는 뜻 -> 그만큼 O(미해결)가 과대계상.
-        shift_b = sign * m["d"].clip(lower=0) * m["n_Black"]
-        shift_w = (1 - sign) / 2 * m["d"].clip(lower=0) * m["n_White"]
-        ob = np.maximum(m["O_Black"] - shift_b, 0.0)
-        ow = np.maximum(m["O_White"] - shift_w, 0.0)
+    # d = q_RA - q_SHR 의 **부호가 뜻을 바꾼다.**
+    #   d > 0  Return A가 검거를 더 많이 본다 -> SHR이 검거를 적게 잡았다
+    #          -> 미해결 O가 d*n 만큼 **과대**계상
+    #   d < 0  반대. O가 그만큼 **과소**계상
+    # 처음에는 d.clip(lower=0)으로 음수를 버렸는데, 실측 d의 중앙값이 -0.09라
+    # 사실상 모든 카운티의 오차를 0으로 만들어 상한이 가짜로 좁아졌다. 부호를
+    # 살려서 양쪽 다 반영한다.
+    for side in ("black", "white"):
+        shift_b = m["d"] * m["n_Black"] if side == "black" else 0.0
+        shift_w = m["d"] * m["n_White"] if side == "white" else 0.0
+        # O는 미해결 건수이므로 [0, n] 밖으로 나갈 수 없다.
+        ob = np.clip(m["O_Black"] - shift_b, 0.0, m["n_Black"])
+        ow = np.clip(m["O_White"] - shift_w, 0.0, m["n_White"])
         rho_adj = np.log((ob + 0.5) / np.maximum(m["E_Black"] + 0.5, eps)) - \
                   np.log((ow + 0.5) / np.maximum(m["E_White"] + 0.5, eps))
         w = 1.0 / np.maximum(m["rho_var"], eps)
@@ -240,7 +327,11 @@ def main():
 
     src = find_source(args.src)
     print(f"[load] Return A: {src}")
-    ra = load_returna(src, None)
+    # 우리 자료가 덮는 연도만 읽는다. Return A는 1960년부터라 그대로 읽으면 20년치를
+    # 헛읽고, 그 행들은 어차피 조인에서 전부 버려진다.
+    span = (int(raw["Year"].min()), int(raw["Year"].max()))
+    ra = load_returna(src, years=span)
+    print(f"[load] Return A {len(ra):,}개 (ORI, 연도) / {span[0]}-{span[1]}")
 
     # --- G1 조인 ---------------------------------------------------------
     j = ory.merge(ra, left_on=["Agency Code", "Year"], right_on=["ori", "year"],
@@ -249,8 +340,13 @@ def main():
     rate = float(hit.mean())
     print(f"[G1] (ORI, 연도) 매칭 {int(hit.sum()):,}/{len(j):,} ({rate*100:.1f}%)")
     if rate < 0.95:
-        print("  [경고] 95% 미만이다. LEOKA는 같은 축에서 100.0%였으므로 "
-              "구현을 의심할 것(계획서 §4-3).")
+        # 계획서 §4-3의 사전 등록된 실패 조건이다. 계속 진행하면 NaN 표가
+        # 저장되면서 "결과가 나왔다"는 인상만 남는다 -- 실제로 한 번 그랬다.
+        raise SystemExit(
+            f"[중단] G1 매칭률 {rate*100:.1f}% < 95%. 계획서 4-3의 실패 조건이다.\n"
+            "  LEOKA는 같은 (ORI, 연도) 축에서 100.0%였으므로 자료가 아니라 구현을\n"
+            "  의심할 것. 확인 순서: 읽은 파일이 전체인가(연도 범위), ORI 형식이\n"
+            "  7자로 같은가, 연도 열이 숫자인가.")
 
     # --- G2 커버리지 -----------------------------------------------------
     j["full_year"] = j["ra_months"].fillna(0) >= 12
