@@ -264,7 +264,8 @@ z는 카운티 고유 효과 전체를 담는다 — 차별·수사자원·도�
 [SHR 정황 조인](reports/SHR정황조인_계획서_CLEAR.md) ·
 [로컬 배포](reports/로컬배포_계획서_CLEAR.md) ·
 [포트폴리오 웹페이지](reports/포트폴리오웹페이지_계획서_CLEAR.md) ·
-[Return A 교차검증](reports/ReturnA교차검증_계획서_CLEAR.md)(**미실행** — 등록만)
+[Return A 교차검증](reports/ReturnA교차검증_계획서_CLEAR.md) ·
+[층 표준화 벌점](reports/층표준화벌점_계획서_CLEAR.md)(**미실행** — 등록만)
 
 그 외: [EDA](reports/EDA_보고서.md) · [개발계획서](reports/AI모델_개발계획서_살인사건검거_GNN.md) ·
 [선행연구 비교](reports/모델벤치마크_선행연구비교.md) · [데이터카드](reports/데이터카드_CLEAR.md) ·
