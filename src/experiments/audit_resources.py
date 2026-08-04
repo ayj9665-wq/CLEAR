@@ -227,12 +227,12 @@ def main():
     for min_n in args.min_n:
         c = cold[cold.min_n == min_n]
         if c.empty:
-            print(f"[경고] min_n={min_n} 행이 {src.name}에 없다 — 건너뜀")
+            print(f"[경고] min_n={min_n} 행이 {src.name}에 없다 - 건너뜀")
             continue
         m = c.merge(res, on=["State", "City"], how="inner")
         m = m[m["homicides"] > 0].dropna(subset=["z", "black_share", "officers"])
         if len(m) < 30:
-            print(f"[경고] min_n={min_n}: 매칭 카운티 {len(m)}개뿐 — 건너뜀")
+            print(f"[경고] min_n={min_n}: 매칭 카운티 {len(m)}개뿐 - 건너뜀")
             continue
 
         print(f"\n=== n>={min_n} : 카운티 {len(m):,}개 "
@@ -282,7 +282,7 @@ def main():
     out = C.scoped_output(args.out)
     pd.DataFrame(tabs).to_csv(out, index=False, encoding="utf-8-sig")
     print(f"\n[save] {out}")
-    print("\n[해석] 헤드라인은 R²가 아니라 **race 계수 감쇠율**이다 — 질문이 'z를 "
+    print("\n[해석] 헤드라인은 R²가 아니라 **race 계수 감쇠율**이다 - 질문이 'z를 "
           "무엇이 설명하는가'가 아니라 '인종 상관이 자원 이야기인가'이기 때문이다. "
           "감쇠가 0 근처면 인종 상관은 인력 규모로 설명되지 않는다. "
           "**두 가지를 반드시 함께 인용할 것**: (1) 프록시는 총 경찰관 수이지 형사 "
