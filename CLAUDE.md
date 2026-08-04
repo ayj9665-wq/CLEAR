@@ -7,17 +7,42 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 CLEAR (*Clearance Learning & Equity Assessment on gRaphs*) predicts whether a US
 homicide case gets solved (`Crime Solved`), using the Murder Accountability
 Project / Kaggle "Homicide Reports, 1980–2014" dataset (~638k rows). The project
-is structured as one question — "what determines clearance?" — pursued in three
-stages: **predict** (flat baseline now, GNN later) → **diagnose** (do clearance
+is structured as one question — "what determines clearance?" — pursued in four
+stages: **predict** (flat baseline → GraphSAGE) → **diagnose** (do clearance
 rates/errors differ by victim race/sex?) → **prescribe** (how much can mitigation
-techniques close that gap, and at what accuracy cost?).
+techniques close that gap, and at what accuracy cost?) → **apply** (where does the
+residual that mitigation did *not* repay concentrate?). All four are executed; the
+findings below are the record.
 
-Written docs with the full design rationale (Korean), in `reports/`:
-`문제정의서_CLEAR.md` (problem definition), `AI모델_개발계획서_살인사건검거_GNN.md`
-(dev plan — graph/edge design, GNN architecture, 4-week roadmap),
-`EDA_보고서.md` (EDA findings), `확장설계서_CLEAR.md` (extension plan, **not yet
-implemented** — edge-relatedness test, model registry, edge importance, unsolved-case
-clustering, national county web map).
+Written docs with the full design rationale (Korean), in `reports/` — 18 files. The
+long ones are **kept in sync with the code rather than frozen at their writing date**,
+so a stale claim in one of them is a bug, not history:
+
+- **`최종보고서_CLEAR.md`** — the whole four-stage narrative, the negative results, and
+  the limits. Read this first; the rest are its depth.
+- `문제정의서_CLEAR.md` (problem definition + ethics gate), `데이터카드_CLEAR.md`
+  (data card), `EDA_보고서.md`, `AI모델_개발계획서_살인사건검거_GNN.md` (dev plan —
+  graph/edge design, GNN architecture, 4-week roadmap).
+- `공정성진단_보고서.md` (the diagnose+prescribe stage in full),
+  `모델벤치마크_선행연구비교.md` (Campedelli 2022 comparison),
+  `모델보고서_{GraphSAGE,XGBoost,LogReg}.md`.
+- `확장설계서_CLEAR.md` (extension plan — **largely executed now**; its own status table
+  at the top says which track is done, and tracks B/C/D1/D3 are the ones that are not).
+- Six tracks were **pre-registered in their own plan doc before the code was written**,
+  and each doc carries its result afterwards: `크로스피팅`, `카운티차분`,
+  `짝지은표준화대조`, `SHR정황조인`, `로컬배포`, `포트폴리오웹페이지`
+  (`*_계획서_CLEAR.md`). Follow that convention for the next intervention —
+  pre-register, tag a rollback point, then execute.
+- `ReturnA교차검증_계획서_CLEAR.md` is pre-registered and **not yet executed** — no code
+  exists for it. It would bound how much of `ρ = +0.083` the measured race-differential
+  recording (+4.1pp) can account for, by treating UCR Return A as an independent second
+  measurement of the same agency's clearances: a disagreement between two measurements of
+  the same police activity is by definition a recording problem, not discrimination or
+  resourcing, so its size caps the contamination.
+
+`README.md` is the outward-facing entry point (3-minute quick start + generated metric
+tables). Its `<!-- METRICS:START/END -->` block is **generated**, not written — see
+`experiments/dashboard.py --emit_readme_tables` below.
 
 ## Commands
 
@@ -58,6 +83,13 @@ python -m experiments.train_gnn --edge_type geo --blind --minibatch --tag blind_
                                     # full-batch rows — see the bridge-run note below)
 python -m experiments.train_gnn --edge_type geo_temporal                        # union of geo+temporal edges
 python -m experiments.train_gnn --blind        # race/sex/ethnicity dummies dropped from X (graph unchanged)
+python -m experiments.train_gnn --blind --minibatch --save_model
+                                    # also -> outputs[/{scope}]/models/
+                                    #         graphsage_{edge}[_mode][_blind][_mb]_seed{N}.pt
+                                    #         (same naming as the prediction dumps)
+                                    # (weights + hyper + FEATURE COLUMN ORDER + blind/scope/
+                                    #  edge_type/k + calibrated:False). gitignored on purpose —
+                                    # see the deployment-layer section below
 
 python -m experiments.diagnose_fairness   # diagnoses EVERY dump in outputs/predictions/ -> fairness_{group_metrics,gaps,model_contrasts,gaps_standardized}.csv
 python -m experiments.diagnose_fairness --models graphsage_geo xgboost   # restrict to specific dumps
@@ -142,9 +174,25 @@ python -m experiments.build_web_map --src cold_blocks.csv --out map_national_tes
 
 python -m experiments.map_figures         # -> outputs/map_fig{1,2}_*.png (county choropleth of the residuals + the race panel)
 python -m experiments.poster_figures      # -> outputs/poster_fig{1,2}_*.png (reads result CSVs only, no retraining)
+
+# --- deployment layer (reads COMMITTED result CSVs only; no torch, no dataset) ---
+pip install -r requirements-dashboard.txt   # pandas + numpy, nothing else
+python -m experiments.dashboard           # -> outputs/dashboard.html + opens the browser
+python -m experiments.dashboard --no_open           # build only (CI / remote)
+python -m experiments.dashboard --scope national    # one scope instead of both tabs
+python -m experiments.dashboard --verify_clone      # rebuild inside a temp tree holding ONLY
+                                          # git-tracked files — the clone-and-run contract
+python -m experiments.dashboard --emit_readme_tables  # rewrites README's METRICS block from results.csv
+
+CLEAR_SCOPE=national python -m experiments.build_story_page
+                                          # -> outputs/national/web/clear_story.html
+                                          # scroll-narrative portfolio page; defaults
+                                          # --src cold_blocks_cv5.csv --simplify_km 1.5
 ```
 
-There is no test suite; there is no build/lint step configured.
+There is no test suite; there is no build/lint step configured. The HTML builders
+(`build_web_map`, `build_story_page`, `dashboard`) each carry their own build-time
+self-check instead — see the deployment-layer section.
 
 ## Scope: this repo is the graph line of work
 
@@ -279,11 +327,14 @@ test-prediction dump format that hands off from training to diagnosis),
 candidates; used by `edge_relatedness`'s oracle and, once built, by the ranked-graph
 mode of `04_build_graph.py`),
 `clear.sweep` (the mitigation sweep harness `mitigate_graph`/`mitigate_loss`
-share). The experiment scripts are thin CLIs over `clear/`; `config.py` holds
+share), `clear.counties` (FIPS join, equal-area projection, and the OKLab
+lightness-matched colour arms — shared by `map_figures`, `build_web_map` and
+`build_story_page`). The experiment scripts are thin CLIs over `clear/`; `config.py` holds
 all paths/constants. The package originally existed because of the import
 constraint above; it stays because its modules genuinely have multiple callers
-(`clear.data` 6, `clear.results` 6, `clear.predictions` 6, `clear.metrics` 5,
-`clear.gnn` 5). The rule for what belongs there is **two or more callers** —
+(`clear.results` 14, `clear.predictions` 10, `clear.gnn` 10, `clear.data` 9,
+`clear.fairness` 6, `clear.graph` 6, `clear.metrics` 5). The rule for what belongs there
+is **two or more callers** —
 single-caller computation stays in its script. `clear.fairgraph` is the one
 exception left (only `mitigate_graph` uses it); it stays because its docstrings
 carry the method rationale for the edge intervention, which would be buried in
@@ -1260,7 +1311,17 @@ as `NaN` and painted all 143 counties as signal. And **per-level payload carries
 changes** — `n`/`z`/`smr`/`black_share` are properties of a county, so shipping them once
 instead of three times took 729 KB (over budget) to 664 KB, with 1.5 km simplification
 closing to 626 KB. Verified without a browser by re-rendering the emitted paths and fills,
-`node --check`, and 13 data invariants; DOM behaviour is unverified.
+`node --check`, and 13 data invariants.
+
+**"DOM behaviour is unverified" was a real hole, and it had already shipped.** `legend()`
+opened with `const d=D[LV[li]];` — `D` was never defined anywhere, so the line threw a
+`ReferenceError` on every call. `paint()` had already filled the counties by then, so all
+three shipped maps *looked* correct while their **legend and ranked table were silently
+empty**; the failure landed after the visible part. `node --check` passes it (syntax is
+valid) and the emitted-path validator never touches it. It was found by querying the DOM
+in a headless browser. So the rule from the figure bugs generalizes to HTML: **the
+validator checks what you told it to check — open the artifact and look at it**, and for
+a page, "look" means query the DOM, not read the source.
 
 **Two national maps ship, and the cross-fit one is primary.** `map_national.html` is built
 from `cold_blocks_cv5.csv` (1,800 counties carry data at n≥20); `map_national_test.html` is
@@ -1318,10 +1379,104 @@ came out mid-red; `clear.counties.arms(n_steps)` now **subsamples the ramp evenl
 both extremes are always present. **Render and look at the output** — the validator
 checks colour, not whether the picture says what you think.
 
+**`experiments/dashboard.py` is the deployment layer, and its whole contract is "clone
+and run".** (`reports/로컬배포_계획서_CLEAR.md`.) One self-contained
+`outputs/dashboard.html` — six panels (predict / diagnose / mitigate / graph diagnostics /
+apply / post-hoc audits), two scope tabs, opened via the stdlib `webbrowser`. It reads
+**only the committed result CSVs**: not `data/processed/`, not `dataset/`, not the
+uncommitted dumps. That is why `requirements-dashboard.txt` is pandas + numpy and nothing
+else — `config.py` imports `os`/`pathlib` only and `clear.results` imports pandas only, so
+the torch/PyG install (CUDA index, manual `pyg-lib`) that `requirements.txt` needs never
+enters the path. The **43 committed result CSVs (13 MB) are what makes this possible**;
+that gitignore rule stops being tidiness and becomes the product.
+
+`--verify_clone` builds the dashboard inside a temp tree holding **only git-tracked
+files**, so the contract is a command rather than a claim. Its self-check is a **runtime
+path trace, not a source grep**: `load()` records every path it opens and only those are
+checked. Grepping the source for `data/processed` failed 4 times on *doc comments* naming
+the path — comments don't get caught now, and a path read without a comment still does.
+
+Two data bugs surfaced only by rendering the panel, both of the "plausible table" kind.
+(1) **`results.csv`'s `std` column is empty on `family=train` rows** — the ledger stores
+one row per seed and aggregation belongs to the reader, so trusting it printed `-`
+everywhere and made the whole margin÷noise column meaningless. Std is now computed across
+seeds. (2) **A label that omits any config key silently merges different experiments.**
+Three-state blind `geo` holds shuffle, ranked and degree-matched-control rows under the
+same model/tag/edge_type; grouping without `edge_mode` averaged 0.2659/0.2628/0.2574 into
+**0.2620, a number that exists nowhere**, and matching `tag` by substring merged
+`fairness_handoff` into plain sighted. Labels now carry every config key (same fix for
+`group_set` in the contrast table and `measure` in the resource audit). **The identity key
+of a row is the full config, in the reader as well as in the writer.**
+
+One caveat is printed on the panel itself: the MCC margin÷noise ratio there is 99.4×
+against the report's 19.0×, because std comes from the 3 seeds left in `results.csv`.
+**The ordering of metrics is the claim, not the absolute ratio** — which metrics clear
+their own noise is the same under both computations.
+
+**`experiments/build_story_page.py` (+ `experiments/_fontpack.py`) is the portfolio page.**
+(`reports/포트폴리오웹페이지_계획서_CLEAR.md`.) Scroll narrative ending in the county map,
+one self-contained file, same rules as `build_web_map` (no chart library, project in
+Python, `--src` drives the caption through the shared `SPLIT_NOTES`). Three things carry:
+**verifiable numbers are read from the CSVs, not typed into the prose** (county counts,
+cold/warm, correlations, top counties), with only the un-derivable ones as constants
+carrying a source comment; **red is reserved for the gap alarm**, so the warm arm is the
+gray ramp (`clear.counties.gray_arm`, which went into `clear/` because the OKLab
+lightness-matching discipline already lives there) and the page never spends alarm colour
+on anything else; and **fonts are subset per weight** — text is emitted as (string,
+weight) pairs so the build knows which glyphs each of 400/700/800 needs, and a missing
+glyph fails the build rather than rendering a box. `_fontpack.py` stays in `experiments/`
+rather than `clear/`: one caller, and this repo's rule for `clear/` is **two or more**.
+The globe hero was built and then **withdrawn** — the plan doc keeps the section marked
+철회 rather than deleting it.
+
+**Licensing is split three ways, and the split is load-bearing rather than bureaucratic.**
+The source data (Kaggle / Murder Accountability Project) is **CC BY-SA 4.0**, so
+share-alike reaches every data-derived artifact: `outputs/**`, `reports/**`, the docs, and
+the generated HTML all ship CC BY-SA 4.0, while `src/**` is MIT because code holds no data
+and is not an adaptation. The sharpest instance is `outputs/predictions/*.csv` — the four
+committed flat-model dumps reproduce licensed *column values* row by row (`y_true` is
+`Crime Solved`; victim race and sex are verbatim), so they are unambiguously adapted
+material. The raw CSV itself is never redistributed.
+
+**The font is a carve-out, not part of that.** The two artifacts that embed a NanumSquare
+subset (`dashboard.html`, `clear_story.html`) would otherwise purport to release a font
+derivative under CC BY-SA, which SIL OFL 1.1 forbids ("cannot be released under any other
+type of license"). Three consequences are wired into the code, not just documented:
+`_fontpack.license_comment()` embeds the **full OFL text** as a leading HTML comment,
+because OFL §2 demands the licence travel with every copy and a *link* would make the
+licence an external dependency of a page whose whole design rule is zero external requests;
+`_fontpack._relicense_names()` rewrites the subset's internal name table to a neutral name
+(OFL §3 — subsetting is a Modified Version) while **preserving nameID 0**, which is the
+notice §2 requires, and restoring the nameID 13/14 licence fields that `fontTools` drops;
+and `--no_fonts` builds omit the OFL comment, since shipping it on a file with no font
+would be a false notice. `OFL.txt` is therefore a **build input** — `--verify_clone`
+catches its absence, and did.
+
+Two false positives came out of this and both generalize. The self-checks flagged the URLs
+inside the OFL text as external requests; the check measures *requests*, not *strings*, so
+HTML comments are now stripped before the scan exactly as base64 payloads already were.
+And `--verify_clone`'s **success** message crashed on a cp949 console over an em-dash —
+console output is a rendering target too, and the failure was in the one path nobody
+exercises.
+
+**`clear.gnn.save_checkpoint` / `load_checkpoint` exist; the weights are deliberately not
+committed.** `train_gnn --save_model` writes one `.pt` per seed under
+`outputs[/{scope}]/models/`, and the file holds the **feature column order** alongside the
+`state_dict`, hyperparameters, `blind`, scope, edge type and `k`. The column order is the
+load-bearing field: `03_features.py` one-hots in a data-dependent order, so a pipeline
+re-run on another machine can permute `X`'s columns and silently attach weights to the
+wrong features — plausible metrics, no error, exactly the failure mode `--blind`'s silent
+no-op already inflicted once. `load_checkpoint` compares the list and **dies on
+mismatch**. The file also records `calibrated: False`, because `pos_weight` training makes
+`proba` a score and not a probability (§`detect_cold_blocks`'s δ) and someone will
+otherwise read it as one. Not committed (`.gitignore`: `outputs/models/`,
+`outputs/*/models/`) even at ~100 KB: a clone has neither the graph nor the features, so
+shipping weights would only *look* like deploying a model.
+
 **Trainers dump test predictions** (`clear.predictions`) joined to
 the unencoded sensitive attributes, so diagnosis reads CSVs and never
 re-instantiates a model — `diagnose_fairness` re-runs in seconds against a GNN that took
-minutes to train, and `mitigate_threshold` (mitigation, not yet written) can write mitigated
+minutes to train, and `mitigate_threshold` (since removed — see Scope) wrote mitigated
 predictions in the same format to be diagnosed by the same code. `diagnose_fairness` with no
 arguments diagnoses *every* dump it finds, which is what makes the flat-vs-graph
 fairness comparison the default rather than an extra step.
@@ -1383,9 +1538,14 @@ and all three floors stay in `outputs/fairness_gaps.csv` so the choice is
 visible rather than buried.
 
 `data/processed/` is gitignored, as are the raw CSV in `dataset/` (too large),
-`outputs/*.png`, and all of `outputs/predictions/` (a few MB each, regenerable by
-re-running `train_baseline`/`train_gnn`). The small result CSVs under `outputs/` **are**
-tracked — they're the experiment record. The shared metrics ledger
+`outputs/*.png`, `outputs/*.log`, and all of `outputs/predictions/` (a few MB each,
+regenerable by re-running `train_baseline`/`train_gnn`) — bar the four committed flat-model
+dumps above. The generated HTML follows the figures: `outputs/web/`, `outputs/*/web/`
+(maps + story page) and `outputs/dashboard.html` are ignored because they are **rebuilt
+from the committed CSVs**, which is the whole point of the clone-and-run contract. Model
+checkpoints (`outputs/models/`, `outputs/*/models/`) are ignored for the opposite reason —
+a clone cannot use them. The small result CSVs under `outputs/` **are**
+tracked — they're the experiment record, and the deployment layer's only input. The shared metrics ledger
 is `outputs/results.csv` (every experiment writes there; `family`/`model`
 columns distinguish rows). It supersedes `metrics.csv` and the three
 `*_tradeoff.csv` files, whose pre-unification contents are preserved under

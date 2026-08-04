@@ -47,6 +47,25 @@ NORMALIZE = {"\u2212": "-", "\u2013": "-", "\u2014": "-"}
 
 FAMILY = "NSQ"        # 로컬 설치본과 이름이 겹치지 않게 별도 패밀리명을 쓴다
 
+# OFL 1.1 §3: Modified Version은 예약 이름(Reserved Font Name)을 "primary font
+# name as presented to the users"로 쓸 수 없다. 서브셋은 글리프를 지우고 포맷을
+# 바꾸므로 §DEFINITIONS가 정의하는 Modified Version이 맞다. 그래서 CSS 패밀리명
+# (FAMILY)뿐 아니라 **바이너리 내부 name 테이블도** 중립 이름으로 바꾼다.
+#
+# 배포처 고지의 예약 목록에 NanumSquareRound / NanumSquareNeo 는 있고 우리가 쓰는
+# NanumSquare 는 없지만, 목록 첫 항목이 "Nanum" 그 자체다. 해석을 다투는 것보다
+# 이름을 바꾸는 편이 싸다.
+SUBSET_NAME = "NSQ Subset"
+SUBSET_PS = "NSQSubset"
+
+# subset이 떨어뜨리는 nameID 13/14(라이선스)를 다시 넣는다. OFL §2가 허용하는
+# "machine-readable metadata fields" 형태다. 저작권인 nameID 0은 subset이 보존하며
+# 여기서도 건드리지 않는다 -- 그것이 §2가 사본마다 요구하는 고지다.
+LICENSE_NOTE = ("Subset of NanumSquare_ac. Distributed by hangeul.naver.com "
+                "under the SIL Open Font License, Version 1.1. "
+                "Full text: OFL.txt in this repository.")
+LICENSE_URL = "https://openfontlicense.org"
+
 
 def normalize(text: str) -> str:
     """페이지에 들어가는 모든 문자열이 통과해야 하는 정규화."""
@@ -93,6 +112,60 @@ def find_fonts(fonts_dir=None):
     return found
 
 
+def _relicense_names(font):
+    """서브셋 바이너리의 이름 계열 레코드를 중립 이름으로 바꾸고 라이선스를 되넣는다.
+
+    무엇을 바꾸고 무엇을 안 바꾸는지가 전부다:
+      바꾼다  1/3/4/6/16/18/20/21/22 -- 사용자에게 보이는 이름 계열 (OFL §3)
+      안 바꾼다 0 -- 저작권 고지. OFL §2가 사본마다 요구하는 바로 그것이다
+      되넣는다 13/14 -- subset이 떨어뜨리는 라이선스 필드
+
+    fontTools의 기본 name_IDs 는 [0..6]이라 13/14가 사라지는 것을 실측으로 확인했다.
+    """
+    nm = font["name"]
+    w = int(font["OS/2"].usWeightClass)
+    full = f"{SUBSET_NAME} {w}"
+    ps = f"{SUBSET_PS}-{w}"
+    new = {1: SUBSET_NAME, 3: f"{full}; subset", 4: full, 6: ps,
+           16: SUBSET_NAME, 18: full, 20: ps, 21: SUBSET_NAME, 22: SUBSET_NAME}
+
+    slots = set()
+    for rec in list(nm.names):
+        if rec.nameID == 0:
+            slots.add((rec.platformID, rec.platEncID, rec.langID))
+        if rec.nameID in new:
+            nm.setName(new[rec.nameID], rec.nameID,
+                       rec.platformID, rec.platEncID, rec.langID)
+    for pid, eid, lid in slots:
+        nm.setName(LICENSE_NOTE, 13, pid, eid, lid)
+        nm.setName(LICENSE_URL, 14, pid, eid, lid)
+
+
+def license_comment():
+    """HTML 맨 위에 실을 OFL 고지 + 전문. 서체를 임베드하는 산출물은 필수다.
+
+    OFL §2는 사본마다 저작권 고지와 **라이선스 전문**을 동봉하라고 요구하고,
+    허용 형태로 "human-readable headers"를 명시한다. 링크가 아니라 임베드인 이유는
+    이 산출물들의 설계 규율이 "외부 요청 0"이기 때문이다 -- 라이선스만 외부 의존으로
+    두면 그 규율을 라이선스에서 깨는 셈이 된다.
+
+    HTML 주석에 `--`가 연속으로 들어가는 것은 엄밀히는 비적합이지만, 주석을 실제로
+    끝내는 시퀀스는 `-->` 하나뿐이라 파싱에는 영향이 없다. 그것만 검사한다.
+    """
+    p = Path(__file__).resolve().parents[2] / "OFL.txt"
+    if not p.exists():
+        raise SystemExit(
+            f"[에러] {p} 가 없다. 서체를 임베드하는 산출물은 OFL 전문을 함께 "
+            f"실어야 한다(OFL §2). --no_fonts 로 서체를 빼거나 OFL.txt를 둘 것.")
+    text = p.read_text(encoding="utf-8").strip()
+    if "-->" in text:
+        raise SystemExit("[에러] OFL.txt 에 '-->' 가 있어 주석이 조기 종료된다.")
+    return ("<!--\n"
+            "이 파일에는 아래 서체의 서브셋이 base64로 포함되어 있다.\n"
+            "SIL Open Font License 1.1 전문을 함께 싣는다(OFL 조항 2).\n\n"
+            f"{text}\n-->\n")
+
+
 def _subset(path, chars, hinting=True):
     """(bytes, flavor, 글리프수). woff2를 먼저 시도하고 brotli가 없으면 WOFF1."""
     from fontTools.subset import Options, Subsetter
@@ -110,6 +183,7 @@ def _subset(path, chars, hinting=True):
     sub = Subsetter(options=opt)
     sub.populate(text=keep)
     sub.subset(font)
+    _relicense_names(font)
 
     for flavor in ("woff2", "woff"):
         try:

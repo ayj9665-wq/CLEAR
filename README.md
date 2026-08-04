@@ -253,13 +253,42 @@ z는 카운티 고유 효과 전체를 담는다 — 차별·수사자원·도�
 4. [확장설계서](reports/확장설계서_CLEAR.md) — 사이드 트랙 · 이상탐지 · 전국 지도
 5. [크로스피팅 계획서](reports/크로스피팅_계획서_CLEAR.md) — 사전 등록과 그 판정
 
-배포·산출물 계획서: [로컬 배포](reports/로컬배포_계획서_CLEAR.md) ·
-[포트폴리오 웹페이지](reports/포트폴리오웹페이지_계획서_CLEAR.md)
+사전 등록 계획서(각 문서가 계획과 그 판정을 함께 담는다):
+[크로스피팅](reports/크로스피팅_계획서_CLEAR.md) ·
+[카운티 차분](reports/카운티차분_계획서_CLEAR.md) ·
+[짝지은 표준화 대조](reports/짝지은표준화대조_계획서_CLEAR.md) ·
+[SHR 정황 조인](reports/SHR정황조인_계획서_CLEAR.md) ·
+[로컬 배포](reports/로컬배포_계획서_CLEAR.md) ·
+[포트폴리오 웹페이지](reports/포트폴리오웹페이지_계획서_CLEAR.md) ·
+[Return A 교차검증](reports/ReturnA교차검증_계획서_CLEAR.md)(**미실행** — 등록만)
 
 그 외: [EDA](reports/EDA_보고서.md) · [개발계획서](reports/AI모델_개발계획서_살인사건검거_GNN.md) ·
 [선행연구 비교](reports/모델벤치마크_선행연구비교.md) · [데이터카드](reports/데이터카드_CLEAR.md) ·
 모델보고서 [GraphSAGE](reports/모델보고서_GraphSAGE.md) ·
 [XGBoost](reports/모델보고서_XGBoost.md) · [LogReg](reports/모델보고서_LogReg.md)
+
+---
+
+## 라이선스
+
+| 대상 | 라이선스 |
+|---|---|
+| `src/**` (코드) | MIT |
+| `outputs/**`, `reports/**`, 문서, 생성 HTML | **CC BY-SA 4.0** — 원자료를 따른다 |
+| 생성 HTML에 포함된 서체 서브셋 | SIL Open Font License 1.1 |
+
+원자료는 Murder Accountability Project의
+[Homicide Reports, 1980–2014](https://www.kaggle.com/datasets/murderaccountability/homicide-reports)(Kaggle)이고
+**[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/deed.ko)** 이다. 정제·표본추출·
+특성공학·모델 예측 부가·카운티 집계의 변경을 가했으며, **share-alike 조건에 따라 데이터
+파생 산출물을 같은 라이선스로 배포한다.** 코드는 데이터를 담고 있지 않아 파생물이 아니므로
+MIT다. `outputs/predictions/*.csv` 4개는 원자료의 열 값을 행 단위로 담으므로 명확한
+파생물이며, 원본 CSV 자체는 재배포하지 않는다.
+
+대시보드와 소개 페이지에는 나눔스퀘어_ac 서브셋이 base64로 들어 있다. OFL 1.1이
+사본마다 요구하므로 **전문을 각 HTML 상단 주석에 함께 싣고**(외부 링크로 두면 "외부 요청
+0"이라는 산출물 규율을 라이선스에서 깨게 된다), 서브셋은 예약 이름을 피해 내부 패밀리명을
+바꾼다. 전문은 [OFL.txt](OFL.txt), 범위 전체는 [LICENSE](LICENSE)에 있다.
 
 ---
 

@@ -16,8 +16,17 @@
   Project, MAP — FBI Supplementary Homicide Report + FOIA 수집분)
 - 출처 URL: https://www.kaggle.com/datasets/murderaccountability/homicide-reports
 - 다운로드 날짜: 2026-07-20 (원본 CSV 파일 타임스탬프 기준)
-- 라이선스/이용 조건: **미확인 — 배포 전 확인 필요.** Kaggle 데이터셋 페이지의
-  라이선스 표기를 직접 확인하고 이 칸을 채울 것. MAP 원자료는 FBI SHR 공개자료를
+- 라이선스/이용 조건: **CC BY-SA 4.0** (2026-08-04 Kaggle 데이터셋 페이지에서 확인).
+  두 가지 의무가 따라온다. **BY** — 창작자·출처·라이선스명·링크와 **변경 사실**을
+  명시한다(웹 지도·소개 페이지·대시보드 하단과 `LICENSE`에 기재). **SA** — 파생물을
+  같은 라이선스로 배포한다. 그래서 이 저장소는 `outputs/**`·`reports/**`·문서·생성
+  HTML을 CC BY-SA 4.0으로, `src/**` 코드를 MIT로 나눠 건다(`LICENSE` 참조).
+  코드는 데이터를 담고 있지 않으므로 파생물이 아니다.
+  share-alike가 실제로 걸리는 곳은 `outputs/predictions/*.csv` 4개다 — 원자료의 열
+  값을 행 단위로 담는다(`y_true` = `Crime Solved`, 피해자 인종·성별, 57,098행).
+  나머지 결과 CSV는 카운티·모델 단위 집계 통계라 법적 근거는 약하지만, 파일별로
+  다투는 대신 같은 조건을 건다. 원본 CSV 자체는 재배포하지 않는다(`.gitignore`).
+  MAP 원자료는 FBI SHR 공개자료를
   기반으로 하나, Kaggle 재배포본의 조건은 별도이므로 추정해서 적지 않는다.
   최소한 출처 표기(MAP + Kaggle)는 모든 산출물에 유지한다.
 - 데이터가 담고 있는 기간/범위: 1980 ~ 2014년 (35년), 미국 50개 주 + DC.

@@ -826,10 +826,10 @@ def verify_clone():
         if r.returncode != 0 or not made:
             print(r.stdout[-1500:] or r.stderr[-1500:])
             shutil.rmtree(tmp, ignore_errors=True)
-            raise SystemExit("[검사] 클론 직후 실행 실패 — 이 산출물의 계약이 깨졌다")
+            raise SystemExit("[검사] 클론 직후 실행 실패 - 이 산출물의 계약이 깨졌다")
         (tmp / "outputs" / "dashboard.html").unlink()
     shutil.rmtree(tmp, ignore_errors=True)
-    print("[검사] 통과 — 원본 데이터·GPU·모델 없이 빌드된다")
+    print("[검사] 통과 - 원본 데이터/GPU/모델 없이 빌드된다")
 
 
 def main():
@@ -885,15 +885,22 @@ def main():
                      f'<ul class="miss-list">{items}</ul></section>')
 
     foot = (f'<footer>{T("출처: Murder Accountability Project / Kaggle Homicide "
-                         "Reports 1980–2014. 이 화면의 모든 숫자는 outputs/ 아래 커밋된 "
-                         "CSV에서 그대로 읽은 값이며, 재현 방법은 README를 참고할 것.")}'
+                         "Reports 1980–2014 (CC BY-SA 4.0). 정제·집계 등 변경을 "
+                         "가했으며, 이 화면의 데이터 산출물도 동일 조건으로 배포한다. "
+                         "모든 숫자는 outputs/ 아래 커밋된 CSV에서 그대로 읽은 값이며, "
+                         "재현 방법은 README를 참고할 것. 서체는 나눔스퀘어_ac "
+                         "서브셋(SIL OFL 1.1, 전문은 이 파일 상단 주석).")}'
             f'</footer>')
 
     face_css, report = ("", {"missing_fonts": ["skipped"]}) if args.no_fonts \
         else FP.build(GL.w, args.fonts_dir)
     print(FP.format_report(report) if not args.no_fonts else "[font] 임베드 생략")
 
-    html = (f'<title>{T("CLEAR — 성능 대시보드", 800)}</title>'
+    # 서체를 실제로 심은 경우에만 OFL 전문을 싣는다(build_story_page와 같은 규칙).
+    ofl = "" if face_css == "" else FP.license_comment()
+
+    html = (f'{ofl}'
+            f'<title>{T("CLEAR — 성능 대시보드", 800)}</title>'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<style>{face_css}{CSS.replace("__FAM__", FP.FAMILY)}</style>'
             f'{head}<div class="wrap">{panes}{miss_html}{foot}</div>'
@@ -905,7 +912,7 @@ def main():
     kb = p.stat().st_size / 1024
     print(f"[save] {p}  ({kb:.0f} KB, 외부 요청 0)")
     if MISSING:
-        print(f"[note] 찾지 못한 파일 {len(dict(MISSING))}개 — 화면에 안내로 표시했다")
+        print(f"[note] 찾지 못한 파일 {len(dict(MISSING))}개 - 화면에 안내로 표시했다")
     check(html, kb)
 
     if not args.no_open:
@@ -927,13 +934,15 @@ def open_story():
             webbrowser.open(s.resolve().as_uri())
             print(f"[open] 소개 페이지도 열었다: {s.relative_to(ROOT)}")
             return
-    print("[open] 소개 페이지가 없어 건너뛴다 — 만들려면:\n"
+    print("[open] 소개 페이지가 없어 건너뛴다 - 만들려면:\n"
           "       CLEAR_SCOPE=national python -m experiments.build_story_page")
 
 
 def check(html, kb):
     errs = []
     scrub = re.sub(r"base64,[A-Za-z0-9+/=]+", "base64,X", html)
+    # 주석 안의 URL은 요청이 아니다(OFL 전문에 URL이 둘 있다). build_story_page와 같은 규칙.
+    scrub = re.sub(r"<!--.*?-->", "", scrub, flags=re.S)
     for m in re.finditer(r"https?://[^\s\"')]+", scrub):
         if m.group(0).startswith("http://www.w3.org"):
             continue

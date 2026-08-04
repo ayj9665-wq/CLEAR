@@ -909,8 +909,13 @@ def main():
         f'{T("python -m experiments.build_story_page")}</code></div>'
         f'</div>')
 
-    lic = T("본문 서체는 나눔스퀘어(네이버)이며, 사용된 글자만 추출해 파일에 "
-            "포함했다. 재배포 조건은 배포처 고지를 따른다.")
+    lic = T("데이터는 Murder Accountability Project의 "
+            "“Homicide Reports, 1980-2014”(Kaggle)이며 CC BY-SA 4.0으로 "
+            "제공된다. 정제·표본추출·집계 등 변경을 가했고, 이 페이지의 데이터 "
+            "산출물도 동일 조건(CC BY-SA 4.0)으로 배포한다. "
+            "본문 서체는 나눔스퀘어_ac(ⓒ 2010 NAVER Corporation)이며, 사용된 "
+            "글자만 추출한 서브셋을 SIL Open Font License 1.1로 포함했다 — "
+            "전문은 이 파일 상단 주석에 있다.")
     geo_note = T("경계 도형은 US Census 카운티 자료를 사용했다. 외부 요청이 전혀 없어 "
                  "네트워크 없이도 열람할 수 있다.")
     footer = (
@@ -956,7 +961,12 @@ def main():
         f'FI={json.dumps(fips_order, separators=(",", ":"))},'
         f'L={json.dumps(LABELS, ensure_ascii=False, separators=(",", ":"))};')
 
-    html = (f'<title>{T("CLEAR - 미제사건의 구조적 격차 진단", 800)}</title>'
+    # 서체를 실제로 심은 경우에만 OFL 전문을 함께 싣는다. OFL 조항 2는 사본마다
+    # 요구하므로, --no_fonts 로 서체가 빠진 파일에까지 넣으면 사실과 다른 고지가 된다.
+    ofl = "" if face_css == "" else FP.license_comment()
+
+    html = (f'{ofl}'
+            f'<title>{T("CLEAR - 미제사건의 구조적 격차 진단", 800)}</title>'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<meta name="description" content="'
             f'{T("미국 살인사건 검거 예측, 공정성 진단과 완화, 그리고 카운티 단위 잔차 지도")}">'
@@ -981,6 +991,10 @@ def check(html, palette, static, per, levels, fips_order, kb):
     #    먼저 지우고 검사한다 -- 안 지우면 폰트를 심는 순간 검사가 40건씩 거짓양성을
     #    낸다(실제로 그랬다).
     scrub = re.sub(r"base64,[A-Za-z0-9+/=]+", "base64,X", html)
+    # 주석 안의 URL도 지운다. OFL 전문에 navercorp.com / openfontlicense.org 가
+    # 들어 있는데, 주석은 **요청이 아니다**. 검사가 재는 것은 "외부 요청 0"이지
+    # "문자열 0"이 아니다 -- base64에서 이미 한 번 겪은 거짓양성과 같은 부류다.
+    scrub = re.sub(r"<!--.*?-->", "", scrub, flags=re.S)
     for m in re.finditer(r"https?://[^\s\"')]+", scrub):
         if m.group(0).startswith("http://www.w3.org"):
             continue                              # SVG 네임스페이스는 요청이 아니다

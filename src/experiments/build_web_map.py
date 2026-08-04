@@ -450,7 +450,9 @@ def main():
                         for h, b in CAVEATS + [SPLIT_NOTES[split]]),
         projnote=PROJECTION_NOTE,
         foot=("출처: Murder Accountability Project / Kaggle Homicide Reports "
-              "1980–2014. 기대값은 공정성 완화(손실 벌점)를 거친 GraphSAGE 모델의 "
+              "1980–2014 (CC BY-SA 4.0). 정제·집계 등 변경을 가했으며, 이 지도의 "
+              "데이터 산출물도 동일 조건으로 배포한다. "
+              "기대값은 공정성 완화(손실 벌점)를 거친 GraphSAGE 모델의 "
               f"{'out-of-fold' if split == 'crossfit' else 'test 집합'} 예측이며, "
               "전역 로짓 보정 후 간접 표준화(SMR)로 계산했다. "
               "재현 방법은 저장소의 CLAUDE.md 참고."),
