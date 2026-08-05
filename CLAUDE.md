@@ -1060,8 +1060,26 @@ states documented optimization instability. The principled fix is a **stratified
 (`fairness_penalty` over within-stratum group variance), which is a new intervention needing
 its own pre-registration, not a re-tune.
 
-**That penalty is now built and pre-registered; the alpha grid has not been judged yet.**
-(`reports/층표준화벌점_계획서_CLEAR.md`, tag `pre-stratified-penalty`.) `fairness_penalty`
+**That penalty is now built, run over its pre-registered grid, and rejected for transition —
+because the gates it has to pass point in opposite directions along alpha.**
+(`reports/층표준화벌점_계획서_CLEAR.md` §13, tag `pre-stratified-penalty`.) 10 grid points
+(alpha 5/10/25/50/100 × cell floor 20/50, 3 seeds, national blind geo mini-batch). It works:
+State-standardized FPR amplification reaches **0.374 [0.252, 0.499] at alpha=25/floor 20**
+where *no* alpha of the pooled penalty ever cleared the 0.5 gate (best 0.590 [0.449, 0.714]),
+and the pressed quantity — the State-standardized selection-rate gap — goes 0.0570 → 0.0400 →
+0.0105. But the county-standardized signed gap **overshoots further, not less** (+0.0080 vs
+the pooled penalty's +0.0062 at matched alpha=25, +0.0204 vs +0.0077 at 100): pressing
+within-State drives the within-county gap further past zero, which is the opposite of the
+pre-registered prediction. The best county point is floor-50 alpha=10 at +0.0002, a **tie**
+with the existing pooled alpha=10 (+0.0004, paired difference +0.0001 [−0.0029, +0.0031], not
+significant at any floor). So **G2 wants high alpha and G3 wants low alpha, and no point
+passes both plus the accuracy budget** — artifacts stay on pooled α=100. Two things do carry:
+**both arms are monotone in all three metrics** where the pooled ladder wobbled
+(0.639/0.701/0.590), so the non-monotonicity was the *pooled definition*, not optimizer
+instability — that is the extension doc's §10-7 observation converted into a measurement; and
+floor 20 dominates floor 50 on the accuracy-fairness frontier, consistent with its larger
+effective standardization population (27 strata / 0.908 weight mass against 19 / 0.816).
+`fairness_penalty`
 takes `strata`/`weights`/`min_cell`; `strata=None` dispatches to the original body verbatim,
 and a test asserts one stratum reproduces it numerically. Four things about the design are
 load-bearing. **It presses on `State` and is judged on county** — 3,042 counties against a
