@@ -1079,6 +1079,25 @@ passes both plus the accuracy budget** — artifacts stay on pooled α=100. Two 
 instability — that is the extension doc's §10-7 observation converted into a measurement; and
 floor 20 dominates floor 50 on the accuracy-fairness frontier, consistent with its larger
 effective standardization population (27 strata / 0.908 weight mass against 19 / 0.816).
+
+**A transition to α=25/floor 20 was opened and then withdrawn, and the withdrawal is the
+sharper result: the diagnose stage and the apply stage need different penalties.** On the
+diagnose axes the stratified model beats the deployed α=100 pooled outright — State-standardized
+signed gaps −0.0570/−0.0436/−0.0390 → −0.0400/−0.0254/−0.0247, all three paired-significant,
+county gap statistically unchanged, MCC equal within seed noise (`reports/…§14`). But
+`detect_cold_blocks` needs a *race-neutral baseline*, which is a **pooled** property: `E_b`
+sums over a county's cases and the residual is compared across counties. The stratified penalty
+presses the within-stratum component only and leaves the between-state component untouched **by
+construction** — so the whole grid fails the apply stage's pre-registered gate (pooled FPR
+amplification CI upper ≤ 0.5): 0.999 [0.886, 1.113] at α=25/floor 20 and 0.760 [0.652, 0.874] at
+its best point, against pooled α=100's 0.261 [0.157, 0.367]. Run end-to-end it shows up as
+`z ↔ black_share` **halving, +0.288 → +0.130** — not a better estimate but a laundered one, `E_b`
+absorbing the between-county race disparity the residual exists to expose. So **artifacts stay on
+pooled α=100** (`cold_blocks*.csv`, maps, `ρ`, the audits; the cv5 dump for the stratified model
+exists but nothing reads it), and the stratified model is reported only in the fairness and
+trade-off tables. This retroactively justifies the extension doc's choice of a *pooled* FPR gate
+for α: matching where you press to where you measure has a different answer per stage, because
+the apply stage's measurement is the between-region gap itself.
 `fairness_penalty`
 takes `strata`/`weights`/`min_cell`; `strata=None` dispatches to the original body verbatim,
 and a test asserts one stratum reproduces it numerically. Four things about the design are
