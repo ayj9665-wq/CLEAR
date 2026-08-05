@@ -280,6 +280,64 @@ def fairness_penalty(proba, codes, min_count=0, *, strata=None, weights=None,
     return _stratified_penalty(proba, codes, strata, weights, min_cell, diag)
 
 
+def penalty_strata(stratum, codes_np, train_idx, device, *, min_cell=0,
+                   batch_size=None):
+    """층 라벨 + **고정** 층가중. mitigate_loss와 crossfit_predictions가 공유한다.
+
+    층 라벨은 `diagnose_fairness --stratum`과 같은 규약으로 붙인다(sample.parquet의
+    행 위치 = features.parquet의 행 위치 = fair_codes의 행 위치). 재는 쪽과 누르는
+    쪽이 같은 층 정의를 써야 층 표준화 벌점의 전제가 성립한다.
+
+    가중치는 **canonical train 분할**에서 한 번 계산해 고정한다(계획서 §4-3).
+    크로스피팅은 폴드마다 학습 노드가 다르지만 가중치는 여기 고정된 것을 그대로
+    쓴다 -- 그래야 cv5 모델의 개입이 test 분할 모델의 개입과 **같은 정의**가 되고,
+    폴드 간 비교도 성립한다. 배치 구성에서 계산하면 스텝마다 표준화 대상 인구가
+    달라져 벌점의 목표가 흔들린다.
+
+    벌점 대상이 아닌 행(codes < 0)은 가중치 계산에서 뺀다. 재는 표준화가 그 그룹
+    집합 위에서 정의돼 있기 때문이다.
+
+    반환 (strata_t, weights_t, label). stratum이 "none"이면 (None, None, None).
+    """
+    import pandas as pd
+
+    if stratum is None or str(stratum).lower() == "none":
+        return None, None, None
+    cols = [c.strip() for c in str(stratum).split(",") if c.strip()]
+    sample = pd.read_parquet(C.SCOPE_DIR / "sample.parquet")
+    missing = [c for c in cols if c not in sample.columns]
+    if missing:
+        raise SystemExit(f"[에러] sample.parquet에 열 없음: {', '.join(missing)}")
+    labels = (sample[cols[0]].astype(str) if len(cols) == 1
+              else sample[cols].astype(str).agg("|".join, axis=1))
+    uniq = {v: i for i, v in enumerate(sorted(labels.unique()))}
+    strata_np = labels.map(uniq).values.astype(np.int64)
+
+    train_idx = np.asarray(train_idx)
+    elig = train_idx[codes_np[train_idx] >= 0]
+    w = np.bincount(strata_np[elig], minlength=len(uniq)).astype(np.float64)
+
+    label = "|".join(cols)
+    # 셀 하한이 개입의 **실효 표준화 인구**를 정한다. 기대 참여 층 수를 미리 찍어
+    # 두면 학습 뒤 [fair] 줄의 실측과 대조할 수 있다(계획서 §4-4).
+    frac = (batch_size / len(elig)) if (batch_size and len(elig)) else 1.0
+    cell = pd.crosstab(strata_np[elig], codes_np[elig]) * frac
+    ok = cell.min(axis=1) >= min_cell
+    print(f"[strat] 층 = {label} ({len(uniq)}개), 셀 하한 {min_cell} -> "
+          f"배치 기대 참여 층 {int(ok.sum())}개 "
+          f"(가중 질량 {float(w[cell.index[ok].values].sum() / w.sum()):.3f})")
+    return (torch.tensor(strata_np, device=device),
+            torch.tensor(w / w.sum(), device=device), label)
+
+
+def strat_tag(stratum, min_cell):
+    """층 벌점 실행의 태그 접미어. **기존 pooled 덤프를 덮지 않기 위한** 것이므로
+    태그를 만드는 곳이 둘(mitigate_loss·crossfit_predictions)이면 규칙도 한 곳에 둔다."""
+    if stratum is None or str(stratum).lower() == "none":
+        return ""
+    return f"_s{str(stratum).replace(',', '')[:5].lower()}{min_cell}"
+
+
 def train_one(edge_type, data, y, train_idx, val_idx, test_idx, *, seed, k_neighbors,
               hidden_dim, num_layers, dropout, lr, weight_decay, aggr,
               max_epochs, patience, val_size, tag, device, edge_mode=None,

@@ -123,6 +123,12 @@ def main():
                     help="민감속성 열을 X에 남긴다(기본은 blind = 전국 산출물 조건)")
     ap.add_argument("--minibatch", action="store_true", default=C.GNN_MINIBATCH,
                     help="NeighborLoader 미니배치(전국 규모에 필수)")
+    ap.add_argument("--fair_stratum", default="none",
+                    help="층 표준화 벌점의 층(none이면 pooled 벌점). **산출물 모델과 "
+                         "같은 값을 줘야 한다** -- cv5 덤프는 test 분할 모델과 같은 "
+                         "개입이어야 cold_blocks·rho·지도가 한 모델을 가리킨다.")
+    ap.add_argument("--fair_min_cell", type=int, default=C.GNN_FAIR_MIN_CELL,
+                    help="(층 x 그룹) 셀 하한. --fair_stratum이 none이면 무시된다.")
     args = ap.parse_args()
 
     blind = not args.sighted
@@ -145,8 +151,16 @@ def main():
     y_t = torch.tensor(y, dtype=torch.float32, device=device)
     folds = fold_indices(y, args.folds, hp["val_size"], C.RANDOM_STATE)
 
-    tag = (f"fairloss_a{args.alpha:g}" + ("_mb" if args.minibatch else "")
-           + f"_cv{args.folds}")
+    # 층가중은 canonical train 분할에서 고정한다 -- 폴드마다 다시 계산하면 폴드별로
+    # 개입이 달라져 out-of-fold 예측이 한 모델의 것이 아니게 된다(gnn.penalty_strata).
+    fair_strata, fair_weights, _ = gnn.penalty_strata(
+        args.fair_stratum, codes_np, get_split(y).train, device,
+        min_cell=args.fair_min_cell,
+        batch_size=hp["batch_size"] if args.minibatch else None)
+
+    tag = (f"fairloss_a{args.alpha:g}"
+           + gnn.strat_tag(args.fair_stratum, args.fair_min_cell)
+           + ("_mb" if args.minibatch else "") + f"_cv{args.folds}")
 
     # 폴드 커버리지 검수를 **학습 전에** 한다 -- 80분을 태우고 나서 폴드가 겹쳤다는
     # 것을 알면 그 80분이 통째로 낭비다.
@@ -169,7 +183,10 @@ def main():
             torch.tensor(va, dtype=torch.long, device=device),
             torch.tensor(held, dtype=torch.long, device=device),
             seed=args.seed, k_neighbors=args.k_neighbors, tag=tag, device=device,
-            fair_alpha=args.alpha, fair_codes=fair_codes, **hp)
+            fair_alpha=args.alpha, fair_codes=fair_codes,
+            fair_strata=fair_strata, fair_stratum=(
+                None if fair_strata is None else args.fair_stratum),
+            fair_weights=fair_weights, fair_min_cell=args.fair_min_cell, **hp)
         # _infer/_logits 모두 input_nodes 순서를 보존하므로 held 순서 그대로 꽂힌다.
         proba[held] = row["_test_proba"]
         mccs.append(row["mcc"])
@@ -181,10 +198,18 @@ def main():
         recorded += results.rows(
             "crossfit", metrics, model="graphsage", tag=tag, seed=args.seed,
             attribute=args.attr, blind=blind,
-            params={"fold": i, "n_folds": args.folds, "split": f"cv{args.folds}",
-                    "alpha": args.alpha, "edge_type": args.edge_type,
-                    "k_neighbors": args.k_neighbors,
-                    "minibatch": True if args.minibatch else None})
+            # None 키는 **빼고** 넘긴다. results.rows는 from_run과 달리 None을
+            # 걸러주지 않으므로(그쪽만 필터가 있다) 그대로 두면 params JSON에
+            # "fair_stratum": null이 실려, 층 벌점을 안 쓰는 기존 cv5 행과 KEY가
+            # 달라지고 재실행이 교체가 아니라 중복이 된다.
+            params={k: v for k, v in {
+                "fold": i, "n_folds": args.folds, "split": f"cv{args.folds}",
+                "alpha": args.alpha, "edge_type": args.edge_type,
+                "k_neighbors": args.k_neighbors,
+                "minibatch": True if args.minibatch else None,
+                "fair_stratum": None if fair_strata is None else args.fair_stratum,
+                "fair_min_cell": None if fair_strata is None else args.fair_min_cell,
+            }.items() if v is not None})
     results.write(recorded)
 
     if np.isnan(proba).any():

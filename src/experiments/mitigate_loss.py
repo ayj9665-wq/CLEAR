@@ -84,39 +84,10 @@ def main():
     print(f"[load] X {su.X.shape} (blind={su.blind}), 벌점 대상 그룹 {sorted(targets)} "
           f"/ 제외 {int((codes_np < 0).sum()):,}행, device={su.device}")
 
-    # 층 라벨. diagnose_fairness --stratum과 **같은 규약**으로 붙인다(sample.parquet의
-    # 행 위치 = features.parquet의 행 위치 = fair_codes의 행 위치). 재는 쪽과 누르는
-    # 쪽이 같은 층 정의를 써야 이 개입의 전제가 성립한다.
-    fair_strata = fair_weights = None
-    if args.fair_stratum.lower() != "none":
-        import pandas as pd
-        cols = [c.strip() for c in args.fair_stratum.split(",") if c.strip()]
-        sample = pd.read_parquet(C.SCOPE_DIR / "sample.parquet")
-        missing = [c for c in cols if c not in sample.columns]
-        if missing:
-            raise SystemExit(f"[에러] sample.parquet에 열 없음: {', '.join(missing)}")
-        labels = (sample[cols[0]].astype(str) if len(cols) == 1
-                  else sample[cols].astype(str).agg("|".join, axis=1))
-        uniq = {v: i for i, v in enumerate(sorted(labels.unique()))}
-        strata_np = labels.map(uniq).values.astype(np.int64)
-        fair_strata = torch.tensor(strata_np, device=su.device)
-
-        # 층가중은 **학습 노드 전체에서 한 번 계산해 고정**한다(계획서 §4-3). 배치에서
-        # 계산하면 스텝마다 표준화 대상 인구가 달라져 벌점의 목표가 흔들린다.
-        # 벌점 대상 그룹(-1이 아닌 행)만 세는 것도 같은 이유 — 재는 표준화가 그 그룹
-        # 집합 위에서 정의돼 있다.
-        train_np = su.train_t.cpu().numpy()
-        elig = train_np[codes_np[train_np] >= 0]
-        w = np.bincount(strata_np[elig], minlength=len(uniq)).astype(np.float64)
-        fair_weights = torch.tensor(w / w.sum(), device=su.device)
-        # 셀 하한이 개입의 실효 표준화 인구를 정한다. 배치 기대 셀 크기를 미리
-        # 찍어 두면, 학습 뒤 [fair] 줄의 실측 참여 층 수와 대조할 수 있다.
-        frac = su.hp["batch_size"] / len(elig) if su.hp.get("minibatch") else 1.0
-        cell = (pd.crosstab(strata_np[elig], codes_np[elig]) * frac)
-        n_ok = int((cell.min(axis=1) >= args.fair_min_cell).sum())
-        print(f"[strat] 층 = {'|'.join(cols)} ({len(uniq)}개), 셀 하한 "
-              f"{args.fair_min_cell} -> 배치 기대 참여 층 {n_ok}개 "
-              f"(가중 질량 {float(fair_weights[torch.tensor(cell.index[cell.min(axis=1) >= args.fair_min_cell].values, device=su.device)].sum()):.3f})")
+    fair_strata, fair_weights, _ = gnn.penalty_strata(
+        args.fair_stratum, codes_np, su.train_t.cpu().numpy(), su.device,
+        min_cell=args.fair_min_cell,
+        batch_size=su.hp["batch_size"] if su.hp.get("minibatch") else None)
 
     # 그래프는 alpha 격자 내내 동일하므로 한 번만 만들어 재사용한다(mitigate_graph와 달리
     # 개입이 손실 쪽에 있어 그래프가 안 바뀐다).
@@ -126,8 +97,7 @@ def main():
 
     # 층 벌점은 **새 태그를 갖는다**(계획서 §0-1 규칙 2). 같은 태그를 쓰면 기존
     # graphsage_fairloss_a*_mb 덤프를 덮어써서, 전환 판정의 비교 대상 자체가 사라진다.
-    strat_tag = ("" if fair_strata is None else
-                 f"_s{args.fair_stratum.replace(',', '')[:5].lower()}{args.fair_min_cell}")
+    strat_tag = gnn.strat_tag(args.fair_stratum, args.fair_min_cell)
     # 층 노브는 안 쓸 때 params에서 빠져야 기존 행의 identity KEY가 유지된다
     # (edge_mode·scope와 같은 규약).
     strat_params = ({} if fair_strata is None else
