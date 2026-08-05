@@ -12,7 +12,7 @@
  * 단언과 CSV 대조는 verify_html.py(파이썬)가 한다. 데이터를 아는 쪽이 데이터를
  * 판정해야 하기 때문이다.
  *
- * 사용: node _domprobe.js <html경로> <kind: map|dashboard>
+ * 사용: node _domprobe.js <html경로> <kind: map|story|dashboard>
  */
 'use strict';
 const fs = require('fs');
@@ -26,13 +26,23 @@ const errors = [];
 
 function textOf(el) { return el ? (el.textContent || '').trim() : null; }
 
-function probeMap(doc, win) {
+/* tableSel: 순위표의 CSS 선택자. build_web_map은 '#t', 소개 페이지는 '#ct'다.
+ *
+ * 이 인자가 생긴 이유를 남겨 둔다. 처음에는 '#t'를 박아 두었고, 소개 페이지에서
+ * tableRows가 모든 수준에서 0으로 나왔다. **표가 비어 있다**로 읽히는 값이었지만
+ * 실제로는 선택자가 안 맞았을 뿐이다 -- 검사기 자신이 "그럴듯한데 틀린" 답을 낸 것이다.
+ * 그래서 지금은 tbody 요소의 **존재 여부를 따로 보고**한다: 요소가 없는 것과 요소가
+ * 있는데 행이 0인 것은 완전히 다른 사건이고, 검사기는 그 둘을 섞으면 안 된다.
+ */
+function probeMap(doc, win, tableSel = '#t') {
+  const tbody = doc.querySelector(tableSel + ' tbody');
   // 한 수준에서의 관측치. 슬라이더를 옮길 때마다 다시 부른다.
   const snap = () => ({
     level: textOf(doc.getElementById('mnv')),
     legendSwatches: doc.querySelectorAll('#leg .sw').length,
     legendSpans: doc.querySelectorAll('#leg > span').length,
-    tableRows: doc.querySelectorAll('#t tbody tr').length,
+    tableFound: !!tbody,
+    tableRows: tbody ? tbody.querySelectorAll('tr').length : -1,
     // 유의 카운티는 paint()가 .sig 클래스를 건다(색만으로 의미를 싣지 않으려고).
     sigPaths: doc.querySelectorAll('#g path.sig').length,
     hatched: [...doc.querySelectorAll('#g path')]
@@ -55,7 +65,7 @@ function probeMap(doc, win) {
     b.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
     layers[b.dataset.layer] = {
       legendSwatches: doc.querySelectorAll('#leg .sw').length,
-      tableRows: doc.querySelectorAll('#t tbody tr').length,
+      tableRows: tbody ? tbody.querySelectorAll('tr').length : -1,
       pressed: b.getAttribute('aria-pressed'),
     };
   }
@@ -68,6 +78,51 @@ function probeMap(doc, win) {
   const after = wrap ? wrap.hidden : null;
 
   return { levels, layers, tableToggle: { before, after } };
+}
+
+/*
+ * jsdom이 구현하지 않는 것을 최소한으로 채운다.
+ *
+ * 셰임이 정당한 이유는 **이 페이지가 그 API를 무엇에 쓰는가**에 달려 있다.
+ * IntersectionObserver는 스크롤 리빌에만 쓰인다 -- 관측 대상에 'in' 클래스를 붙이고
+ * unobserve하는 것이 전부다. 그래서 "즉시 교차했다"고 답하는 셰임은 **끝까지 스크롤한
+ * 상태**와 같고, 우리가 단언하고 싶은 것도 바로 그 상태다.
+ *
+ * getBoundingClientRect는 셰임이 필요 없다. 소개 페이지에서의 유일한 용도가
+ * `void c.getBoundingClientRect()` -- 반환값을 버리는 리플로우 강제라, jsdom이 0을
+ * 돌려줘도 무해하다. requestAnimationFrame은 페이지가 일부러 **안 쓴다**(프레임이
+ * 스로틀되면 확대가 통째로 빠진다는 주석이 코드에 있다).
+ *
+ * 즉 여기서 흉내내는 것은 레이아웃이 아니라 **가시성 이벤트 하나**뿐이다. 레이아웃에
+ * 의존하는 단언을 새로 추가하려면 그때는 진짜 브라우저가 필요하다.
+ */
+function installShims(win) {
+  win.IntersectionObserver = class {
+    constructor(cb) { this._cb = cb; }
+    observe(el) { this._cb([{ target: el, isIntersecting: true }], this); }
+    unobserve() {}
+    disconnect() {}
+    takeRecords() { return []; }
+  };
+}
+
+function probeStory(doc, win) {
+  const sections = [...doc.querySelectorAll('.sec, #mapsec, footer')];
+  return {
+    // 스크립트가 끝까지 돌았는지의 카나리아. 이 클래스는 스크립트 첫머리에서 붙고,
+    // CSS는 .js가 붙었을 때만 본문을 숨긴다 -- 스크립트가 죽으면 페이지가 빈 화면이
+    // 되는 대신 리빌 없이 그냥 보이도록 설계돼 있다(점진적 향상).
+    jsClass: doc.documentElement.classList.contains('js'),
+    sections: sections.length,
+    revealed: sections.filter(s => s.classList.contains('in')).length,
+    counters: [...doc.querySelectorAll('[data-count]')].map(b => ({
+      want: String(b.dataset.count || ''),
+      text: (b.textContent || '').trim(),
+    })),
+    hero: !!doc.getElementById('hero'),
+    // 지도 절은 build_web_map과 같은 골격이므로 같은 조회를 재사용한다.
+    map: probeMap(doc, win, '#ct'),
+  };
 }
 
 function probeDashboard(doc, win) {
@@ -95,6 +150,7 @@ const html = fs.readFileSync(file, 'utf8');
 const dom = new JSDOM(html, {
   runScripts: 'dangerously',
   pretendToBeVisual: true,          // requestAnimationFrame 제공
+  beforeParse: installShims,        // 페이지 스크립트가 돌기 **전에** 채워야 한다
   virtualConsole: new (require(path.join(__dirname, '..', '..',
     'node_modules', 'jsdom')).VirtualConsole)()
     .on('jsdomError', e => errors.push(String(e && e.message || e)))
@@ -107,7 +163,9 @@ win.addEventListener('error', e => errors.push('window.onerror: ' + e.message));
 
 let result = {};
 try {
-  result = kind === 'map' ? probeMap(doc, win) : probeDashboard(doc, win);
+  const probes = { map: probeMap, story: probeStory, dashboard: probeDashboard };
+  if (!probes[kind]) throw new Error('알 수 없는 kind: ' + kind);
+  result = probes[kind](doc, win);
 } catch (e) {
   errors.push('probe threw: ' + (e && e.stack || e));
 }

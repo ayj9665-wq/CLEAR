@@ -260,7 +260,7 @@ def main():
             tab = audit_one(dump, attr, args.qs, args.min_n, args.n_boot,
                             C.RANDOM_STATE)
             if tab.empty:
-                print(f"  [{attr}] n>={args.min_n} 그룹이 2개 미만 — 건너뜀")
+                print(f"  [{attr}] n>={args.min_n} 그룹이 2개 미만 - 건너뜀")
                 continue
             tab.insert(0, "model", model)
             all_tabs.append(tab)

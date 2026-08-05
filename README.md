@@ -195,8 +195,21 @@ python -m experiments.build_web_map --src cold_blocks_cv5.csv \
         --out map_national.html --simplify_km 1.5
 ```
 
-전체 명령 목록과 각 인자의 의미는 `CLAUDE.md`에 있다. 테스트 스위트와 빌드/린트
-단계는 없다.
+전체 명령 목록과 각 인자의 의미는 `CLAUDE.md`에 있다. 빌드/린트 단계는 없다.
+
+### 테스트
+
+```bash
+pip install pytest
+pytest            # 저장소 루트에서. 93개, 약 6초
+```
+
+성능이나 결론을 검증하지 않는다. 이 저장소가 실제로 겪은 **조용히 틀리는** 사고들이
+재발하면 시끄럽게 실패하는지만 본다 — 원장 identity 규약, `--blind` 무음 no-op,
+지표 정의(특히 specificity가 음성 클래스 재현율인 것), 보정의 순위 보존, 카운티 별칭
+병합과 **독립시 과잉 병합 방지**, FIPS 중복 가드, `flag == ""` 가 CSV에서 `NaN`이 되는
+함정, 인라인 JS 문법 검사. 원본 데이터가 필요한 테스트는 **실패가 아니라 skip**한다 —
+클론에 데이터가 없는 것은 정상이기 때문이다.
 
 **전국 규모에는 `--minibatch`가 필수다** — `geo` 그래프가 방향 엣지 2,504만 개로
 full-batch에 약 20GB가 필요하다(가용 12.9GB).

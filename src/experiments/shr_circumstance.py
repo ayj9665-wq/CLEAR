@@ -175,7 +175,7 @@ def measure_outcome_dependence(m):
           f"   차이 {by.get(False, 0) - by.get(True, 0):+.1f}%p")
     cols = [c for c in CONTRAST if c in tab.columns]
     print(tab[cols].round(1).rename_axis("해결").to_string())
-    print("  비교 기준 — config.LEAKAGE_COLS의 가해자 열은 미해결에서 90~99%가 Unknown이다.")
+    print("  비교 기준 - config.LEAKAGE_COLS의 가해자 열은 미해결에서 90~99%가 Unknown이다.")
     return {"und_solved": float(by.get(True, np.nan)),
             "und_unsolved": float(by.get(False, np.nan))}
 
@@ -207,7 +207,7 @@ def measure_race_gap(m, floors, n_boot, seed):
         c = w[(w[f"size_{CONTRAST[0]}"] >= floor)
               & (w[f"size_{CONTRAST[1]}"] >= floor)].copy()
         if len(c) < 30:
-            print(f"  [경고] 하한 {floor}: 카운티 {len(c)}개뿐 — 건너뜀")
+            print(f"  [경고] 하한 {floor}: 카운티 {len(c)}개뿐 - 건너뜀")
             continue
         d = (c[f"mean_{CONTRAST[0]}"] - c[f"mean_{CONTRAST[1]}"]).to_numpy() * 100
         wt = (c[f"size_{CONTRAST[0]}"] + c[f"size_{CONTRAST[1]}"]).to_numpy(float)
@@ -357,7 +357,7 @@ def main():
     by_circ.to_csv(C.scoped_output(f"{args.out_prefix}_by_circumstance.csv"),
                    index=False, encoding="utf-8-sig")
     print(f"\n[save] {C.scoped_output(args.out_prefix + '_summary.csv')} 외 2개")
-    print("\n[해석] 결론은 **측정 2**에 선다 — 같은 카운티 안에서 기록된 정황 C가 "
+    print("\n[해석] 결론은 **측정 2**에 선다 - 같은 카운티 안에서 기록된 정황 C가 "
           "피해자 인종 R에 의존하므로(+4%p대), C로 통제하는 것은 R을 담은 변수로 통제하는 "
           "일이다. 인과 그림에서 C는 충돌부이고, 통제하면 편향의 크기가 아니라 **부호조차** "
           "모르게 된다. 따라서 정황으로 E_b를 조정하는 것은 인종 격차를 설명하는 것이 "

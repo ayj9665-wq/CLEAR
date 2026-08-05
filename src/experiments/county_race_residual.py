@@ -183,12 +183,12 @@ def check_row_conservation(agg, src, min_n):
     """§7-4 행 보존 + 보정 단일성. 실패하면 즉시 멈춘다."""
     path = C.scoped_output(src)
     if not path.exists():
-        print(f"[검수] {path.name} 없음 — 행 보존 검사 건너뜀")
+        print(f"[검수] {path.name} 없음 - 행 보존 검사 건너뜀")
         return
     cb = pd.read_csv(path)
     cb = cb[(cb.block_key == "county") & (cb.min_n == min_n)]
     if cb.empty:
-        print(f"[검수] {src}에 min_n={min_n} 행 없음 — 건너뜀")
+        print(f"[검수] {src}에 min_n={min_n} 행 없음 - 건너뜀")
         return
     # 모든 인종(Unknown 포함) 합계여야 한다. 두 그룹만 더하면 당연히 안 맞는다.
     tot = (agg.groupby(["State", "City"])[["n", "O", "E"]].sum()
@@ -237,7 +237,7 @@ def main():
     for min_race_n in args.min_race_n:
         m = contrast(agg, race_col, min_race_n, args.haldane == "on")
         if len(m) < 30:
-            print(f"[경고] 인종당 n>={min_race_n}: 카운티 {len(m)}개뿐 — 건너뜀")
+            print(f"[경고] 인종당 n>={min_race_n}: 카운티 {len(m)}개뿐 - 건너뜀")
             continue
         base, ci = summarize(m, [], args.n_boot, C.RANDOM_STATE)
         m2 = m.assign(min_race_n=min_race_n)

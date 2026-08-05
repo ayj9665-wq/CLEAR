@@ -208,14 +208,24 @@ python -m experiments.verify_html --selftest        # prove the checker catches 
                                           # original ReferenceError, then exit
 ```
 
-`tests/` holds the only unit tests in the repo — `test_fairness_penalty.py` (11 cases,
-run with `pytest tests/` from the repo root). They exist because the stratified fairness
-penalty's correctness claim is an *equivalence* ("one stratum reproduces the pooled
-penalty exactly"), which is checkable on synthetic input and would otherwise be judged
-from an overnight alpha grid, where an implementation bug and a real finding look the
-same. `tests/conftest.py` puts `src/` on the path and **imports `config` before torch** —
-the reverse order dies with `OMP: Error #15` on this machine. Everything else is still
-covered by build-time self-checks, not tests, and there is no build/lint step configured.
+**Tests: `pytest` from the repo root** (93 tests, ~6 s, `tests/`). There is no build or
+lint step. The suite is deliberately narrow — it does not check performance or
+conclusions, it checks that **this repo's specific silent-wrong failures stay loud**:
+ledger identity (`params` is identity, `notes` is not — the 78-duplicate-row bug),
+`from_run` dropping `None` knobs, `--blind`'s no-op assertions, the seven-metric
+definitions (especially specificity-as-negative-recall, whose inversion would flip every
+mitigation claim), calibration being total-matching *and* rank-preserving, county
+canonicalization merging renames while **not** merging independent cities into their
+surrounding counties, `assert_one_row_per_fips` raising, the `flag == ""` vs `NaN` trap,
+`_htmlcheck` actually failing on broken JS, and every `print` in `src/` being cp949-encodable
+(43 of the 93 are that one parametrized check, one per file). The exception to "no
+conclusions" is `test_fairness_penalty.py`: the stratified penalty's claim *is* an
+equivalence — one stratum must reproduce the pooled penalty exactly — so it is checkable on
+synthetic input, and without it an implementation bug and a real finding are indistinguishable
+in an overnight alpha grid. Tests requiring `data/processed/` skip
+rather than fail, because a clone legitimately has no data — the same rule the dashboard's
+contract runs on. Both fixture directions were mutation-checked: emptying `ALIASES` or
+neutering the FIPS guard makes the corresponding tests fail.
 The HTML builders
 (`build_web_map`, `build_story_page`, `dashboard`) each carry their own build-time
 self-check instead — external-request scan, size budget, data invariants, and
@@ -1118,10 +1128,10 @@ alone could not tell the intervention from training noise. The bias direction is
 within-state race gap is still negative, so `E_b` is overstated in high-Black-share counties
 and **`z ↔ black_share = +0.290` is a lower bound**.
 
-National cold blocks (test set, α=100, δ=+0.8170): 853 county blocks at n≥20, 38 cold /
+National cold blocks (test set, α=100, δ=+0.8170): 852 county blocks at n≥20, 37 cold /
 52 warm. Top: Fulton/Atlanta (SMR 1.55, z 15.66), Baltimore city, St. Louis city,
 Orleans, Richmond, DC, Wayne, Cook — far stronger face validity than three states could
-show. `z ↔ black_share` strengthens to **+0.381** (+0.546 at n≥100), cold blocks
+show. `z ↔ black_share` strengthens to **+0.380** (+0.544 at n≥100), cold blocks
 averaging 0.680 Black share against warm 0.233; still not exclusively a race story
 (2 of 38 cold counties are under 0.30). The §5-4-1 caveat travels with the map: the model
 has no county feature, so z carries the whole county effect and case mix / discrimination
@@ -1132,16 +1142,16 @@ association lives in is now measured, see the county-differencing section below.
 `experiments/crossfit_predictions.py` gives every one of the 638,454 rows an out-of-fold
 p̂ — 5 folds, transductive (the graph stays whole; only the loss moves to the fold's learn
 nodes, which is the regime `clear.gnn` already runs), α=100/blind/minibatch held fixed,
-76 min. Blocks at n≥20 go 853 → **1,803** (28% → 59% of counties) and `z ↔ black_share`
-drops **+0.381 → +0.290 [+0.245, +0.331]**, CI excluding the old point estimate at all
+76 min. Blocks at n≥20 go 852 → **1,803** (28% → 59% of counties) and `z ↔ black_share`
+drops **+0.380 → +0.290 [+0.245, +0.331]**, CI excluding the old point estimate at all
 three floors. **The matched control is what makes that attributable to coverage**: three
 things moved at once (block set, split, 3-seed mean → 1 seed), so `crossfit_compare`
-recomputes the cv5 correlation on the *same 853 counties* — it lands at +0.413/+0.500/+0.556,
+recomputes the cv5 correlation on the *same 852 counties* — it lands at +0.411/+0.498/+0.554,
 i.e. the split/seed effect is ≈0 (CI covers 0 at n≥50 and n≥100) and the whole −0.11
 belongs to the 950 newly admitted small counties (median n=34, mean Black share 0.200,
 internal correlation only +0.158). So the claim is **limited, not withdrawn**: the
 association is clearly positive nationwide, but its strength scales with county size, and
-+0.381 is a large-county-weighted estimate rather than a national average. Two by-products:
++0.380 is a large-county-weighted estimate rather than a national average. Two by-products:
 warm blocks grew 5.3× against cold's 1.95× (power reveals "solves better than expected"
 counties faster), and fold MCC 0.2969 ± 0.0041 matches the test-split a100's 0.2979 — 14%
 more training nodes bought no accuracy, so learning is saturated at this sample size.
@@ -1337,6 +1347,42 @@ of "undetermined" (a statement about investigation, not about the case) plus the
 within-county race dependence, which invalidates `C` as a control whether the mechanism is
 `Y → C` or `D → C`.
 
+**`experiments/returna_crosscheck.py` bounds how much of `ρ` could be recording, using an
+independent second measurement.** (`reports/ReturnA교차검증_계획서_CLEAR.md`, tag
+`pre-returna`.) UCR Return A (openICPSR **100707** — a third deposit, distinct from SHR's
+100699 and LEOKA's 102180) is the same agency counting the same homicides and clearances on
+a different form, so a disagreement between it and `Crime Solved` cannot be discrimination
+or resourcing — by construction it is a recording problem, and its size caps the
+contamination. `(ORI, year)` joins at **100.0%**, matching LEOKA's precedent on the same
+axis. The shipped version is *wide monthly* (one row per agency-year, months as columns,
+1,448 of them), so the loader sums the twelve `{MON}_ACT_MURDER` / `_CLR_MURDER` columns and
+reads only 27 of them; `MANSLAUGHTER` is excluded because Part I `murder` already means
+murder and nonnegligent manslaughter while the separate column is negligent.
+
+**The verdict is the pre-registered second row: state the bound, keep `ρ`.** Recorded
+homicide counts agree — `SHR/ReturnA` median **1.029**, so the heaviest scenario (the sample
+itself is biased) does not fire. Clearance rates disagree substantially — `d = q_RA − q_SHR`
+median **−0.0913** — but **`corr(d, black_share) = +0.013 [−0.136, +0.052]`, i.e. zero**, so
+the disagreement carries no racial pattern. Worst case, with the entire measured error piled
+onto one race, `ρ = +0.0819` (this track reads the *lowest* race floor, `min_race_n=10`; the headline `ρ = +0.084` elsewhere in this file is the floor-20 row of the same table) moves to **[−0.0658, +0.2328]**: the sign does not survive that
+extreme, and nothing supports the extreme. So the sibling reading of the SHR `+4.1pp` holds
+but is **not promoted**, and the artifact reading is not excluded either. Read `d`'s sign
+with care — `Crime Solved` is a snapshot that includes clearances years later while Return A
+books them in the month they happen and the file ends in 2016, so part of −0.091 is
+structural censoring rather than error. That is why this track yields an interval and not a
+point estimate. One new by-product: `corr(SHR/ReturnA, black_share) = −0.240 [−0.294,
+−0.196]` — coverage itself is not race-neutral, at 3% overall magnitude.
+
+Three defects surfaced while running it, all of the plausible-but-wrong kind. `find_source`
+expanded a directory into its file list and read **only the 1960 file**, giving G1 = 0% —
+and the pre-registered failure condition merely *warned* and carried on, saving a table full
+of NaN. It now aborts. `MONTHS_REPORTED` is a sentence (`"december is the last month
+reported"`), not a number, so `to_numeric` would silently mark every agency-year as
+unreported. And the contamination bound clipped `d` at zero, which erased essentially every
+county's error because the measured median is **negative**; fixing the sign moved the bound
+from [+0.039, +0.164] to **[−0.066, +0.233]**, i.e. across zero — an error large enough to
+change the conclusion.
+
 **The national flat baseline now exists, and it revises half of the mechanism claim.**
 `train_baseline.py` was restored from `96d1dd1` and run at national scope only — this is
 the one thing on the backlog that genuinely needed training, and it is **additive**: it
@@ -1465,11 +1511,20 @@ load-only check would miss it), and screen counts equal to counts recomputed fro
 original `const d=D[LV[li]];` into a copy of the shipped map and fails if the checker still
 passes; it currently reports the defect as 28 findings, the first being the uncaught
 `ReferenceError`. It runs by default before the real artifacts — same discipline as
-deliberately planting a syntax error to prove `node --check` fires. Coverage is jsdom's:
-the dashboard uses no browser-only API and the maps use only `createElementNS`, so three of
-four artifacts are covered — including both that carried the bug. `clear_story.html` needs
-a real browser (`IntersectionObserver`, `requestAnimationFrame`, `getBoundingClientRect`)
-and is not checked here.
+deliberately planting a syntax error to prove `node --check` fires. It runs by default before the real artifacts — same discipline as
+deliberately planting a syntax error to prove `node --check` fires.
+
+**All four artifacts are covered, and the story page needed a shim rather than a browser.**
+Reading what it actually does with the browser-only APIs settled that: `IntersectionObserver`
+drives scroll-reveal only (add `in`, `unobserve`), so a shim that reports immediate
+intersection *is* the fully-scrolled state we want to assert; `getBoundingClientRect`
+appears once as `void c.getBoundingClientRect()` to force reflow, so jsdom's zeros are
+harmless; and `requestAnimationFrame` is deliberately **not** used. So the shim fakes one
+visibility event, not layout — any future assertion that depends on layout does need a real
+browser. The story page gets its own selftest with a different injected defect, because its
+fatal mode differs: `.js` goes on at the top of the script and the CSS hides content only
+under `.js`, so a script that dies *after* that line leaves every section at `opacity:0` —
+a blank page. Injecting a throw right after the class is added reproduces exactly that.
 
 **The CSV cross-check immediately found a defect that is not in the map at all.** Screen
 counts ran 3 short at n≥20 and 1 short at n≥50/100. Two are legitimate — `City` is
@@ -1566,7 +1621,7 @@ apply / post-hoc audits), two scope tabs, opened via the stdlib `webbrowser`. It
 uncommitted dumps. That is why `requirements-dashboard.txt` is pandas + numpy and nothing
 else — `config.py` imports `os`/`pathlib` only and `clear.results` imports pandas only, so
 the torch/PyG install (CUDA index, manual `pyg-lib`) that `requirements.txt` needs never
-enters the path. The **43 committed result CSVs (13 MB) are what makes this possible**;
+enters the path. The **60 committed result CSVs (17 MB) are what makes this possible**;
 that gitignore rule stops being tidiness and becomes the product.
 
 `--verify_clone` builds the dashboard inside a temp tree holding **only git-tracked

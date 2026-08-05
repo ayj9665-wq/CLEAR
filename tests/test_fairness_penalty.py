@@ -14,6 +14,12 @@ float64로 검사한다 — 학습은 float32로 돌지만, 등가성을 재는 
 """
 import pytest
 
+# **torch보다 먼저** config를 읽는다. config.py가 KMP_DUPLICATE_LIB_OK를 import 전에
+# 세팅하는데(환경 노트), 이 기계에서 순서가 뒤바뀌면 OMP Error #15로 인터프리터가
+# 죽는다 -- 예외가 아니라 프로세스 종료다. 전체 실행에서는 다른 테스트 모듈이 먼저
+# config를 import해 가려지므로, 이 파일만 단독으로 돌릴 때만 터진다. conftest에
+# 넣지 않고 여기 두는 이유는 torch를 쓰는 테스트가 이 파일뿐이기 때문이다.
+import config as _config   # noqa: F401
 torch = pytest.importorskip("torch")
 
 from clear.gnn import fairness_penalty, _pooled_penalty   # noqa: E402

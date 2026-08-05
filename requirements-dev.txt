@@ -1,0 +1,8 @@
+# 개발 전용 의존. 산출물 빌드에도, 대시보드 실행에도 필요 없다.
+#
+# pytest      tests/ -- 회귀 검사(저장소 루트에서 `pytest`)
+# jsdom       DOM 검사는 npm 쪽이다: 저장소 루트에서 `npm install` (package.json)
+#
+# 산출물을 보기만 할 사람은 requirements-dashboard.txt,
+# 재학습할 사람은 requirements.txt 를 쓸 것.
+pytest>=8.0
