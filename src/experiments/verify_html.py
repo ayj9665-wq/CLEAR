@@ -59,6 +59,8 @@ def targets():
         ("map (cv5)", web / "map_national.html", "map", out / "cold_blocks_cv5.csv"),
         ("map (test)", web / "map_national_test.html", "map", out / "cold_blocks.csv"),
         ("story", web / "clear_story.html", "story", out / "cold_blocks_cv5.csv"),
+        ("story v2", web / "clear_story_v2.html", "story2",
+         out / "cold_blocks_cv5.csv"),
     ]
 
 
@@ -219,6 +221,134 @@ def check_story(label, obs, csv_path, errs):
               csv_path, errs)
 
 
+
+def check_story2(label, obs, csv_path, errs):
+    """ver2. 서사 쪽 단언은 v1과 같고, ver2가 새로 약속한 넷을 더 본다.
+
+    각 단언은 "이게 조용히 깨지면 화면에서 무슨 일이 일어나는가"에서 역산했다.
+    아키텍처 탭이 죽으면 설명 패널이 첫 단계에 고정된 채로 남고, 접이식이 죽으면
+    상세가 **영영 안 열린다**(v1과 달리 ver2는 근거를 접어 두므로, 그건 근거가
+    사라진 것과 같다). 패널이 엉뚱한 값을 담는 경우가 가장 위험한데, 화면상으로는
+    아무 문제도 없어 보이기 때문이다 -- 그래서 값을 직접 대조한다.
+    """
+    r, seen = obs["result"], obs["errors"]
+    for e in seen:
+        errs.append(f"{label}: 페이지가 예외를 던졌다 -- {e[:200]}")
+
+    if not r.get("jsClass"):
+        errs.append(f"{label}: <html>에 .js가 안 붙었다 (스크립트가 초반에 죽었다)")
+    if not r.get("sections"):
+        errs.append(f"{label}: 서사 절을 하나도 못 찾았다")
+    elif r["revealed"] != r["sections"]:
+        errs.append(f"{label}: 절 {r['sections']}개 중 {r['revealed']}개만 드러났다 "
+                    f"-- .js가 붙은 채 리빌이 안 되면 그 절은 **투명한 채로 남는다**")
+    if not r.get("hero"):
+        errs.append(f"{label}: hero 절이 없다(ver2는 #hero2)")
+    if not r.get("counters"):
+        errs.append(f"{label}: data-count 카운터가 하나도 없다")
+    for c in r.get("counters", []):
+        if c["want"] and c["want"] != c["text"]:
+            errs.append(f"{label}: 카운터 불일치 data-count={c['want']!r} "
+                        f"화면={c['text']!r}")
+
+    # --- 03 아키텍처 단계 선택 ---------------------------------------------
+    a = r.get("arch", {})
+    if a.get("tabs", 0) != 4 or a.get("panes", 0) != 4 or a.get("zones", 0) != 4:
+        errs.append(f"{label}: 아키텍처 단계가 4/4/4가 아니다 "
+                    f"(탭 {a.get('tabs')} · 설명 {a.get('panes')} · 강조 {a.get('zones')})")
+    for p in a.get("picks", []):
+        if p["selected"] != p["clicked"] or p["openPane"] != p["clicked"] \
+                or p["zoneOn"] != p["clicked"]:
+            errs.append(f"{label}: 단계 {p['clicked']}를 눌렀는데 "
+                        f"선택={p['selected']} 설명={p['openPane']} 강조={p['zoneOn']}")
+        if p["openPanes"] != 1:
+            errs.append(f"{label}: 설명 패널이 동시에 {p['openPanes']}개 열렸다")
+
+    # --- 접이식 상세 -------------------------------------------------------
+    folds = r.get("folds", [])
+    if not folds:
+        errs.append(f"{label}: 접이식 상세가 하나도 없다")
+    for f in folds:
+        if not f["found"]:
+            errs.append(f"{label}: 접이식 '{f['id']}'의 내용 영역이 없다")
+        elif not (f["before"] is True and f["opened"] is False
+                  and f["closed"] is True):
+            errs.append(f"{label}: 접이식 '{f['id']}'가 안 열리거나 안 닫힌다 "
+                        f"({f['before']} -> {f['opened']} -> {f['closed']})")
+        if f["expanded"] != "true":
+            errs.append(f"{label}: 접이식 '{f['id']}'의 aria-expanded가 "
+                        f"{f['expanded']!r}")
+
+    # --- 스크롤 진입 안내 ---------------------------------------------------
+    sp = r.get("spotlight", {})
+    if not sp.get("outlines"):
+        errs.append(f"{label}: 지도 안내가 카운티를 하나도 표시하지 않았다")
+    if not sp.get("caption"):
+        errs.append(f"{label}: 지도 안내 설명이 비어 있다")
+    if not sp.get("skip"):
+        errs.append(f"{label}: 안내를 건너뛸 방법이 없다")
+
+    # --- 상세 패널: 값까지 대조한다 -----------------------------------------
+    p = r.get("panel", {})
+    if not p.get("hintOnLoad"):
+        errs.append(f"{label}: 선택 전 패널 안내 문구가 없다")
+    if p.get("idx", -1) < 0:
+        errs.append(f"{label}: 유의 판정된 카운티를 못 찾았다 -- 패널을 검사할 수 없다")
+        return
+    want, got = p["expect"], p.get("afterMapClick", {})
+    if got.get("name") != f"{want['county']}, {want['state']}":
+        errs.append(f"{label}: 패널 제목이 {got.get('name')!r}, "
+                    f"기대는 {want['county']}, {want['state']}")
+    # **자리까지 본다.** 값이 들어 있기만 하면 통과시키면, 사건 수 자리에 미해결
+    # 수가 찍히는 종류의 결함이 그대로 빠져나간다 -- 두 값 다 화면에는 있다.
+    order = [("n", "사건 수"), ("smr", "배수"), ("z", "확신도"),
+             ("q", "헛짚을 확률"), ("black", "흑인 비중")]
+    shown = got.get("stats") or []
+    if len(shown) != len(order):
+        errs.append(f"{label}: 패널 통계가 {len(shown)}개다({len(order)}개여야 한다)")
+    for k, (key, label_ko) in enumerate(order):
+        if k >= len(shown) or shown[k] != str(want[key]):
+            errs.append(f"{label}: 패널 {k+1}번째({label_ko})가 "
+                        f"{shown[k] if k < len(shown) else None!r}, "
+                        f"기대는 {want[key]}")
+    if got.get("bars") != 2:
+        errs.append(f"{label}: 실제/기대 막대가 2개가 아니다({got.get('bars')})")
+    if not got.get("verdict"):
+        errs.append(f"{label}: 패널 해석 문장이 비어 있다")
+    if got.get("outlines") != 1:
+        errs.append(f"{label}: 선택 표시가 {got.get('outlines')}개다(1이어야 한다)")
+    if not p.get("rowSelectedIsRight"):
+        errs.append(f"{label}: 지도에서 고른 카운티가 표에서 선택되지 않았다")
+    if p.get("scrolledToRow") != p["idx"]:
+        errs.append(f"{label}: 지도 클릭이 표의 {p.get('scrolledToRow')}행으로 "
+                    f"스크롤했다 -- 고른 것은 {p['idx']}행이다")
+
+    # --- 지도 <-> 표 양방향 -------------------------------------------------
+    if not p.get("hoverMapMarksRow"):
+        errs.append(f"{label}: 지도 호버가 표 행을 강조하지 않는다")
+    if not p.get("hoverRowMarksMap"):
+        errs.append(f"{label}: 표 호버가 지도를 강조하지 않는다")
+    rc = p.get("afterRowClick", {})
+    if not rc.get("name"):
+        errs.append(f"{label}: 표 행을 눌렀는데 패널이 안 열린다")
+
+    # --- 키보드 -------------------------------------------------------------
+    if p.get("firstTabIndex") != 0:
+        errs.append(f"{label}: 표 첫 행이 탭 대상이 아니다"
+                    f"(tabIndex={p.get('firstTabIndex')})")
+    ad = p.get("afterArrowDown", {})
+    if not (ad.get("first") == -1 and ad.get("second") == 0 and ad.get("focused")):
+        errs.append(f"{label}: 아래 화살표로 행 이동이 안 된다({ad})")
+    if not (p.get("afterEnter") or {}).get("name"):
+        errs.append(f"{label}: Enter로 상세가 열리지 않는다")
+    esc = p.get("afterEscape", {})
+    if esc.get("name") or not esc.get("hint") or esc.get("outlines"):
+        errs.append(f"{label}: Escape로 선택이 해제되지 않는다({esc})")
+
+    check_map(label + " 지도", {"result": r.get("map", {}), "errors": []},
+              csv_path, errs)
+
+
 def check_dashboard(label, obs, errs):
     r, seen = obs["result"], obs["errors"]
     for e in seen:
@@ -282,6 +412,7 @@ def selftest(errs):
         tmp.unlink(missing_ok=True)
 
     _selftest_story(errs)
+    _selftest_story2(errs)
 
 
 def _selftest_story(errs):
@@ -318,9 +449,49 @@ def _selftest_story(errs):
         tmp.unlink(missing_ok=True)
 
 
+
+def _selftest_story2(errs):
+    """ver2가 새로 약속한 것들에 대해서도 검사기가 무는지 확인한다.
+
+    여기서 심는 결함은 v1과 또 다르다. ver2의 특징적 실패는 **패널이 열리기는
+    하는데 값이 틀린 것**이다 -- 화면상 아무 이상이 없어 보이므로 눈으로는 절대
+    안 잡힌다. 그래서 '사건 수' 자리에 '미해결 수'를 찍게 만든다. 둘 다 그 카운티의
+    실제 값이라 어느 것도 이상해 보이지 않고, **자리까지 대조하는 단언만이** 잡는다.
+
+    처음 심었던 결함(통계 배열 첨자를 하나 밀기)은 이 검사를 통과했다. 옆 첨자가
+    비어 있는 카운티가 많아 `|| 원래값` 폴백에 먹혔기 때문이다 -- 검사기를 검증하지
+    않았다면 "결함을 잡는다"고 믿은 채로 배포됐을 자리다.
+    """
+    src = C.scoped_output("web") / "clear_story_v2.html"
+    if not src.exists():
+        print("[selftest] clear_story_v2.html 이 없어 ver2 검증은 건너뛴다")
+        return
+    html = src.read_text(encoding="utf-8")
+    anchor = "'<dt>'+L2.p_cases+'</dt><dd>'+t[2]+'</dd>'"
+    if anchor not in html:
+        errs.append("[selftest] ver2에 결함을 심을 지점을 못 찾았다 -- 검사기가 낡았다")
+        return
+    broken = html.replace(anchor, "'<dt>'+L2.p_cases+'</dt><dd>'+t[3]+'</dd>'", 1)
+
+    tmp = ROOT / ".joblib_tmp" / "_selftest_story2.html"
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    tmp.write_text(broken, encoding="utf-8")
+    try:
+        found = []
+        check_story2("selftest", probe(tmp, "story2"), None, found)
+        if not found:
+            errs.append("[selftest] **ver2에 결함을 심었는데 통과했다.** "
+                        "패널 값 대조가 실제로 물지 않는다.")
+        else:
+            print(f"[selftest] ver2 통과 - 자리를 바꾼 결함을 {len(found)}건으로 "
+                  f"잡았다 (예: {found[0][:70]})")
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--only", choices=["map", "dashboard"],
+    ap.add_argument("--only", choices=["map", "story", "story2", "dashboard"],
                     help="한 종류만 검사한다")
     ap.add_argument("--selftest", action="store_true",
                     help="결함을 일부러 심어 검사기가 잡는지 확인한다")
@@ -348,6 +519,8 @@ def main():
             check_map(label, obs, csv_path, errs)
         elif kind == "story":
             check_story(label, obs, csv_path, errs)
+        elif kind == "story2":
+            check_story2(label, obs, csv_path, errs)
         else:
             check_dashboard(label, obs, errs)
         mark = "OK " if len(errs) == before else "실패"

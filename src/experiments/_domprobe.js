@@ -12,7 +12,7 @@
  * 단언과 CSV 대조는 verify_html.py(파이썬)가 한다. 데이터를 아는 쪽이 데이터를
  * 판정해야 하기 때문이다.
  *
- * 사용: node _domprobe.js <html경로> <kind: map|story|dashboard>
+ * 사용: node _domprobe.js <html경로> <kind: map|story|story2|dashboard>
  */
 'use strict';
 const fs = require('fs');
@@ -97,6 +97,14 @@ function probeMap(doc, win, tableSel = '#t') {
  * 의존하는 단언을 새로 추가하려면 그때는 진짜 브라우저가 필요하다.
  */
 function installShims(win) {
+  /* jsdom에는 레이아웃이 없어 scrollIntoView도 없다. 여기서는 **호출을 기록만**
+   * 한다. 어디까지 스크롤됐는지는 레이아웃 문제라 jsdom이 답할 수 없지만, "어느
+   * 요소로 스크롤하려 했는가"는 동작이고 그건 단언할 수 있다 -- ver2에서 지도
+   * 클릭이 표의 **엉뚱한 행**으로 스크롤하는 결함은 화면상 아무 이상이 없어 보인다.
+   * 아무것도 안 하는 셰임을 넣으면 그 결함이 통째로 안 보인다. */
+  win.__scrolled = [];
+  win.Element.prototype.scrollIntoView = function () { win.__scrolled.push(this); };
+
   win.IntersectionObserver = class {
     constructor(cb) { this._cb = cb; }
     observe(el) { this._cb([{ target: el, isIntersecting: true }], this); }
@@ -122,6 +130,152 @@ function probeStory(doc, win) {
     hero: !!doc.getElementById('hero'),
     // 지도 절은 build_web_map과 같은 골격이므로 같은 조회를 재사용한다.
     map: probeMap(doc, win, '#ct'),
+  };
+}
+
+/* ver2(clear_story_v2.html). v1의 관측에 ver2가 새로 약속한 넷을 더한다:
+ * 아키텍처 단계 선택 / 접이식 상세 / 카운티 상세 패널 / 지도<->표<->키보드 연동.
+ *
+ * 순서가 중요하다. **스크롤 진입 안내를 가장 먼저 본다** -- 설계상 사용자가 무엇이든
+ * 조작하면 즉시 중단되므로, 슬라이더 하나만 먼저 건드려도 관측 대상이 사라진다.
+ *
+ * 페이지의 데이터(S/PL/LV)는 var 전역이라 여기서 그대로 읽을 수 있다. 그래서 패널에
+ * 찍힌 문자열을 **그 카운티의 실제 값과 직접 대조**한다 -- '패널이 채워졌다'가 아니라
+ * '패널이 맞는 값으로 채워졌다'를 봐야 한다. 그럴듯한 표가 틀린 수를 담는 것이 이
+ * 저장소가 반복해 당한 실패다.
+ */
+function probeStory2(doc, win) {
+  const sections = [...doc.querySelectorAll('.sec, #mapsec, footer')];
+  const M = (t, o) => new win.MouseEvent(t, Object.assign({ bubbles: true }, o || {}));
+  const K = k => new win.KeyboardEvent('keydown', { key: k, bubbles: true });
+
+  // 1) 안내 -- 어떤 조작보다 먼저
+  const spotlight = {
+    outlines: doc.querySelectorAll('#spt path').length,
+    caption: textOf(doc.getElementById('spotcap')),
+    skip: !!doc.getElementById('spotskip'),
+  };
+
+  // 2) 패널 초기 상태(선택 전)
+  const panelHint = doc.querySelectorAll('#panel .phint').length;
+
+  // 3) 아키텍처 단계 선택
+  const atabs = [...doc.querySelectorAll('.atab')];
+  const arch = { tabs: atabs.length, panes: doc.querySelectorAll('.apane').length,
+                 zones: doc.querySelectorAll('.azone').length, picks: [] };
+  atabs.forEach((t, i) => {
+    t.dispatchEvent(M('click'));
+    arch.picks.push({
+      clicked: i,
+      selected: atabs.map(x => x.getAttribute('aria-selected')).indexOf('true'),
+      openPanes: [...doc.querySelectorAll('.apane')].filter(p => !p.hidden).length,
+      openPane: [...doc.querySelectorAll('.apane')]
+        .map(p => !p.hidden).indexOf(true),
+      zoneOn: [...doc.querySelectorAll('.azone')]
+        .map(z => z.classList.contains('on')).indexOf(true),
+    });
+  });
+
+  // 4) 접이식 상세
+  const folds = [...doc.querySelectorAll('.foldb')].map(b => {
+    const c = doc.getElementById('fold-' + b.dataset.fold);
+    const before = c ? c.hidden : null;
+    b.dispatchEvent(M('click'));
+    const opened = c ? c.hidden : null;
+    const expanded = b.getAttribute('aria-expanded');
+    b.dispatchEvent(M('click'));
+    return { id: b.dataset.fold, found: !!c, before, opened, expanded,
+             closed: c ? c.hidden : null };
+  });
+
+  // 5) 지도 절 -- v1과 같은 골격이므로 같은 조회를 재사용한다
+  const map = probeMap(doc, win, '#ct');
+
+  // 6) 상세 패널과 연동. 슬라이더/레이어를 처음 상태로 되돌린 뒤 본다.
+  const slider = doc.getElementById('mn');
+  if (slider) { slider.value = '0'; slider.dispatchEvent(new win.Event('input')); }
+  const res = doc.querySelector('[data-layer="res"]');
+  if (res) res.dispatchEvent(M('click'));
+  const tw = doc.getElementById('tablewrap');
+  if (tw && tw.hidden) doc.getElementById('tbl').dispatchEvent(M('click'));
+
+  const lv = win.LV[0], sArr = win.PL[lv].s;
+  const idx = sArr.findIndex(v => v === 2);          // 유의 판정된 첫 카운티
+  const st = idx >= 0 ? win.S.stat[idx] : null;
+  const paths = [...doc.querySelectorAll('#g path')];
+
+  const readPanel = () => ({
+    name: textOf(doc.querySelector('#panel h4')),
+    flag: textOf(doc.querySelector('#panel .pflag')),
+    verdict: textOf(doc.querySelector('#panel .pverdict')),
+    bars: doc.querySelectorAll('#panel .pbrow').length,
+    stats: [...doc.querySelectorAll('#panel dl.pstats dd')].map(d => textOf(d)),
+    close: !!doc.getElementById('pclose'),
+    toTable: !!doc.getElementById('ptable'),
+    outlines: doc.querySelectorAll('#sel path').length,
+    hint: doc.querySelectorAll('#panel .phint').length,
+  });
+
+  const panel = { hintOnLoad: panelHint, idx,
+                  expect: st ? { county: st[1], state: st[0], n: st[2], obs: st[3],
+                                 exp: st[4], smr: st[5], z: st[6], black: st[7],
+                                 q: win.PL[lv].q[idx] } : null };
+  if (idx >= 0) {
+    paths[idx].dispatchEvent(M('click'));
+    panel.afterMapClick = readPanel();
+    panel.rowSelected = !!doc.querySelector('#ct tbody tr.sel');
+    const last = win.__scrolled[win.__scrolled.length - 1];
+    panel.scrolledToRow = last && last.dataset ? +last.dataset.i : null;
+    panel.rowSelectedIsRight =
+      (doc.querySelector('#ct tbody tr.sel') || {}).dataset === undefined
+        ? false : +doc.querySelector('#ct tbody tr.sel').dataset.i === idx;
+
+    // 지도 호버 -> 표 행 강조
+    paths[idx].dispatchEvent(M('pointermove', { clientX: 10, clientY: 10 }));
+    const hl = doc.querySelector('#ct tbody tr.hl');
+    panel.hoverMapMarksRow = !!hl && +hl.dataset.i === idx;
+
+    // 표 호버 -> 지도 강조
+    const other = doc.querySelector('#ct tbody tr:not([data-i="' + idx + '"])');
+    if (other) {
+      other.dispatchEvent(M('pointerover'));
+      panel.hoverRowMarksMap = doc.querySelectorAll('#hl path').length;
+    }
+
+    // 표 행 클릭 -> 패널
+    const row = doc.querySelector('#ct tbody tr');
+    if (row) {
+      row.dispatchEvent(M('click'));
+      panel.afterRowClick = readPanel();
+      panel.rowClickIdx = +row.dataset.i;
+    }
+
+    // 키보드: roving tabindex + Enter
+    const rows = [...doc.querySelectorAll('#ct tbody tr')];
+    panel.firstTabIndex = rows[0] ? rows[0].tabIndex : null;
+    rows[0].focus();
+    rows[0].dispatchEvent(K('ArrowDown'));
+    panel.afterArrowDown = { first: rows[0].tabIndex, second: rows[1].tabIndex,
+                             focused: doc.activeElement === rows[1] };
+    rows[1].dispatchEvent(K('Enter'));
+    panel.afterEnter = readPanel();
+    panel.enterIdx = +rows[1].dataset.i;
+
+    // 닫기(Escape)
+    doc.dispatchEvent(K('Escape'));
+    panel.afterEscape = readPanel();
+  }
+
+  return {
+    jsClass: doc.documentElement.classList.contains('js'),
+    sections: sections.length,
+    revealed: sections.filter(s => s.classList.contains('in')).length,
+    counters: [...doc.querySelectorAll('[data-count]')].map(b => ({
+      want: String(b.dataset.count || ''),
+      text: (b.textContent || '').trim(),
+    })),
+    hero: !!doc.getElementById('hero2'),
+    spotlight, arch, folds, panel, map,
   };
 }
 
@@ -163,7 +317,8 @@ win.addEventListener('error', e => errors.push('window.onerror: ' + e.message));
 
 let result = {};
 try {
-  const probes = { map: probeMap, story: probeStory, dashboard: probeDashboard };
+  const probes = { map: probeMap, story: probeStory, story2: probeStory2,
+                   dashboard: probeDashboard };
   if (!probes[kind]) throw new Error('알 수 없는 kind: ' + kind);
   result = probes[kind](doc, win);
 } catch (e) {

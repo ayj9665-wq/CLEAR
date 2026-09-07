@@ -188,6 +188,11 @@ CLEAR_SCOPE=national python -m experiments.build_story_page
                                           # -> outputs/national/web/clear_story.html
                                           # scroll-narrative portfolio page; defaults
                                           # --src cold_blocks_cv5.csv --simplify_km 1.5
+CLEAR_SCOPE=national python -m experiments.build_story_page_v2
+                                          # -> outputs/national/web/clear_story_v2.html
+                                          # same content on a hiring-reader's path; imports
+                                          # every figure and sentence from build_story_page
+                                          # (values shared, template owned). Same flags.
 
 npm install                               # once, at the repo root: jsdom (dev only)
 CLEAR_SCOPE=national python -m experiments.verify_html
@@ -196,12 +201,12 @@ CLEAR_SCOPE=national python -m experiments.verify_html
                                           # against cold_blocks*.csv. NOT part of any
                                           # build — the dashboard must stay buildable
                                           # on pandas+numpy alone
-python -m experiments.verify_html --only map        # one kind
+python -m experiments.verify_html --only map        # one kind (map/story/story2/dashboard)
 python -m experiments.verify_html --selftest        # prove the checker catches the
                                           # original ReferenceError, then exit
 ```
 
-**Tests: `pytest` from the repo root** (39 tests, ~1.4 s, `tests/`). There is no build or
+**Tests: `pytest` from the repo root** (89 tests, ~1.4 s, `tests/`). There is no build or
 lint step. The suite is deliberately narrow — it does not check performance or
 conclusions, it checks that **this repo's specific silent-wrong failures stay loud**:
 ledger identity (`params` is identity, `notes` is not — the 78-duplicate-row bug),
@@ -210,7 +215,10 @@ definitions (especially specificity-as-negative-recall, whose inversion would fl
 mitigation claim), calibration being total-matching *and* rank-preserving, county
 canonicalization merging renames while **not** merging independent cities into their
 surrounding counties, `assert_one_row_per_fips` raising, the `flag == ""` vs `NaN` trap,
-and `_htmlcheck` actually failing on broken JS. Tests requiring `data/processed/` skip
+and `_htmlcheck` actually failing on broken JS. `test_story_figures.py` adds the story
+pages' own version of that rule: the ladders must draw **one** quantity, `fair()` must
+abort rather than silently take the first of three stratum floors, and ver2's summary
+cards must agree with the metric table printed below them. Tests requiring `data/processed/` skip
 rather than fail, because a clone legitimately has no data — the same rule the dashboard's
 contract runs on. Both fixture directions were mutation-checked: emptying `ALIASES` or
 neutering the FIPS guard makes the corresponding tests fail.
@@ -1594,6 +1602,53 @@ weight) pairs so the build knows which glyphs each of 400/700/800 needs, and a m
 glyph fails the build rather than rendering a box.
 The globe hero was built and then **withdrawn** — the plan doc keeps the section marked
 철회 rather than deleting it.
+
+**That "verifiable numbers are read from the CSVs" claim was half true, and the half that
+was not had shipped.** The county counts and correlations were read; the diagnose and
+prescribe *ladders* were literals, and they had drifted. The alpha ladder's label says
+"pooled FPR amplification by race" and **only one of its four bars was that quantity** —
+α=0 was the selection-rate amplification (1.805; FPR is 1.893) and α=25/50 were the
+*State-standardized* values (0.639/0.701 against pooled 0.451/0.429). Three bars from two
+other axes, drawn as one smooth descending ladder. Alongside it, the county-standardized
+amplification `0.662` predated the Dade/Miami-Dade county merge (now 0.671) and several
+CIs predated a re-run (0.590 [0.456, 0.738] → [0.449, 0.714]; ρ +0.083 → +0.084). Same
+class as the dashboard's `0.2620` — a plausible number that exists nowhere. Fixed by
+deleting the literals and reading the rows: `fair()`, `contrast()` and `rho()` pull from
+the committed `fairness_*.csv` / `county_race_residual_summary.csv` and **abort when the
+selection does not narrow to exactly one row** (the county table has three stratum floors,
+so a missing `min_stratum_n` silently took the first). `tests/test_story_figures.py` locks
+it, mutation-checked: putting the standardized value back in the α=25 bar fails it.
+
+**`experiments/build_story_page_v2.py` is the same content on a hiring-reader's path**
+(30 seconds / 2 minutes / 5 minutes), ending in the same map: hero → problem → approach →
+architecture → **key findings** → predict/diagnose/prescribe (evidence folded) →
+**contribution** → apply → limits → stack. It follows the precedent `build_story_page`
+set with `build_web_map`: **values are imported, the template is owned.** Every sentence
+and figure comes from v1's `problem_parts()` / `predict_parts()` / `diagnose_parts()` /
+`prescribe_parts()` / `ARCH_SVG` / `ARCH_STEPS` / `NOTES` / `PREDICT_ROWS`, so the two
+pages cannot come to claim different numbers; only the four v1 changes needed for that
+(`section(sid=)`, `check(budget=)`, `subst()`, `build_body` split into `*_parts()`) touch
+v1, and each was verified to leave its output byte-identical.
+
+Two things it does that v1 does not. The **key-findings section states its sample scope**,
+because v1's diagnose section runs a national ladder (1.805/1.558/0.671) straight into
+three-state figures (1.48/0.67/+0.82) with no label — fine inside the narrative, but
+compressed into a summary card it reads as *"close the direct path and the flat model
+stops amplifying"*, which is **false nationally** (blind XGBoost 1.632). The claimable
+national quantity is the paired difference +0.173 [+0.135, +0.212] (+0.257 standardized).
+And the map gains a **click-through detail panel, two-way map↔table linking, a one-shot
+scroll-in walkthrough (targets chosen from the data, aborted by any interaction, skipped
+under `prefers-reduced-motion`) and keyboard access via roving tabindex on the table** —
+per-row `tabindex` would mean 1,800 tab stops and the bytes to match. **No colour was
+added**: selection is a white outline only, since colour here means "residual unsolved"
+and nothing else, and the build fails if `#sel path` ever gains a fill. `verify_html
+--only story2` drives all of it in jsdom and **compares the panel's printed values against
+that county's real values, position by position**; its selftest plants a "case count cell
+shows the unsolved count" defect. The first defect planted there (shifting the stat index)
+**passed** — neighbouring entries are often empty so the `|| fallback` absorbed it — which
+is exactly why the checker gets checked. jsdom has no `scrollIntoView`, so the shim
+**records the call target** rather than no-op'ing: which row we scrolled to is behaviour
+and can be asserted, even though how far is layout and cannot.
 
 `_fontpack.py` (2 callers — story page and dashboard) and `_htmlcheck.py` (3 — both of
 those plus `build_web_map`) stay in `experiments/` even though they clear this repo's
