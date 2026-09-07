@@ -137,9 +137,10 @@ def register_labels():
 # 본문
 # ---------------------------------------------------------------------------
 
-def section(num, label, title, lead, body_html=""):
+def section(num, label, title, lead, body_html="", sid=None):
+    """sid는 ver2가 절로 바로 이동하는 링크를 걸기 위한 것이다. 생략하면 v1 그대로."""
     return (
-        f'<section class="sec"><div class="inner">'
+        f'<section class="sec"{f' id="{sid}"' if sid else ""}><div class="inner">'
         f'<div class="shead"><span class="snum">{T(num, 800)}</span>'
         f'<span class="slab">{T(label, 800)}</span></div>'
         f'<h2>{T(title, 800)}</h2>'
@@ -185,12 +186,179 @@ def metric_table(rows):
     return f'<table class="mt"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>'
 
 
-def build_body(stats):
-    """페이지 본문(지도 섹션 제외)."""
-    n_rows, n_counties, n_assessed, n_cold, n_warm, corr = stats
-    h = []
+# ---------------------------------------------------------------------------
+# 03 ARCHITECTURE -- 예측 단계의 구조 도해
+#
+# 좌표가 박힌 SVG를 통째로 상수로 둔다. 도해는 데이터에서 나오지 않고 **구조를
+# 설명하는 그림**이라 값이 바뀌어도 모양이 따라 바뀌지 않는다 -- 지도와 정반대다.
+# 다만 팔레트만은 자리표시자로 빼 둔다. 페이지의 색은 한 곳에서 정의된다는 규칙이
+# 도해에서만 깨지면, 배경색을 바꿨을 때 여기만 남는다.
+# ---------------------------------------------------------------------------
 
-    # --- S1 문제 ---------------------------------------------------------
+ARCH_BLOCK = "#34343a"      # 블록 경계(점선). 팔레트가 아니라 도해 전용 회색이다
+ARCH_EDGE = "#45454b"       # 엣지 선. 노드(MUTED)보다 어두워야 노드가 앞에 온다
+
+ARCH_SVG = """<svg viewBox="0 0 960 300" role="img" aria-label="{aria}"><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="{mut}"/></marker></defs><text class="hd" x="10" y="30">{t0}</text><text class="hd" x="262" y="30">{t1}</text><text class="hd" x="712" y="30">{t2}</text><text class="sm" x="10" y="276">{t3}</text><text class="sm" x="262" y="276">{t4}</text><text class="sm" x="712" y="276">{t5}</text><circle cx="48" cy="84" r="11" fill="{mut}"/><circle cx="170" cy="100" r="11" fill="{mut}"/><circle cx="120" cy="146" r="11" fill="{mut}"/><circle cx="52" cy="200" r="11" fill="{mut}"/><circle cx="152" cy="226" r="11" fill="{mut}"/><rect x="102" y="58" width="20" height="20" rx="5" fill="{mut}"/><rect x="50" y="118" width="20" height="20" rx="5" fill="{mut}"/><rect x="172" y="150" width="20" height="20" rx="5" fill="{mut}"/><rect x="100" y="196" width="20" height="20" rx="5" fill="{mut}"/><rect x="28" y="234" width="20" height="20" rx="5" fill="{mut}"/><rect x="262" y="62" width="176" height="186" rx="14" fill="none" stroke="{blk}" stroke-width="1.4" stroke-dasharray="5 5"/><rect x="460" y="62" width="182" height="186" rx="14" fill="none" stroke="{blk}" stroke-width="1.4" stroke-dasharray="5 5"/><line x1="350" y1="90" x2="409" y2="133" stroke="{edg}" stroke-width="1.4"/><line x1="409" y1="133" x2="386" y2="202" stroke="{edg}" stroke-width="1.4"/><line x1="386" y1="202" x2="314" y2="202" stroke="{edg}" stroke-width="1.4"/><line x1="314" y1="202" x2="291" y2="133" stroke="{edg}" stroke-width="1.4"/><line x1="291" y1="133" x2="350" y2="90" stroke="{edg}" stroke-width="1.4"/><line x1="551" y1="90" x2="610" y2="133" stroke="{edg}" stroke-width="1.4"/><line x1="610" y1="133" x2="587" y2="202" stroke="{edg}" stroke-width="1.4"/><line x1="587" y1="202" x2="515" y2="202" stroke="{edg}" stroke-width="1.4"/><line x1="515" y1="202" x2="492" y2="133" stroke="{edg}" stroke-width="1.4"/><line x1="492" y1="133" x2="551" y2="90" stroke="{edg}" stroke-width="1.4"/><circle cx="350" cy="90" r="11" fill="{mut}"/><circle cx="409" cy="133" r="11" fill="{mut}"/><circle cx="386" cy="202" r="11" fill="{mut}"/><circle cx="314" cy="202" r="11" fill="{mut}"/><circle cx="291" cy="133" r="11" fill="{mut}"/><rect x="541" y="80" width="20" height="20" rx="5" fill="{mut}"/><rect x="600" y="123" width="20" height="20" rx="5" fill="{mut}"/><rect x="577" y="192" width="20" height="20" rx="5" fill="{mut}"/><rect x="505" y="192" width="20" height="20" rx="5" fill="{mut}"/><rect x="482" y="123" width="20" height="20" rx="5" fill="{mut}"/><circle cx="748" cy="92" r="10" fill="{mut}"/><line x1="748" y1="102" x2="748" y2="122" stroke="{mut}" stroke-width="1.4"/><circle cx="796" cy="92" r="10" fill="{mut}"/><line x1="796" y1="102" x2="796" y2="122" stroke="{mut}" stroke-width="1.4"/><circle cx="844" cy="92" r="10" fill="{mut}"/><line x1="844" y1="102" x2="844" y2="122" stroke="{mut}" stroke-width="1.4"/><circle cx="892" cy="92" r="10" fill="{mut}"/><line x1="892" y1="102" x2="892" y2="122" stroke="{mut}" stroke-width="1.4"/><line x1="748" y1="122" x2="892" y2="122" stroke="{mut}" stroke-width="1.4"/><line x1="820" y1="122" x2="820" y2="146" stroke="{mut}" stroke-width="1.4" marker-end="url(#ah)"/><text class="sm" x="832" y="142">{t6}</text><circle cx="820" cy="164" r="16" fill="{ink}"/><line x1="820" y1="180" x2="820" y2="208" stroke="{mut}" stroke-width="1.4" marker-end="url(#ah)"/><text x="820" y="232" text-anchor="middle">{t7}</text><line x1="212" y1="152" x2="242" y2="152" stroke="{mut}" stroke-width="1.4" marker-end="url(#ah)"/><line x1="658" y1="152" x2="692" y2="152" stroke="{mut}" stroke-width="1.4" marker-end="url(#ah)"/></svg>"""
+
+ARCH_STEPS = [
+    ("INPUT", "입력",
+     "사건 1건이 노드 1개다. 범주형 항목을 전부 펼쳐 사건당 특성 123개를 만든다. 가해자 관련 항목은 미제 사건의 90~99%가 '미상'으로 기록되어 있어 정답을 그대로 알려 주는 것과 같으므로 전부 제외했다."),
+    ("GRAPH", "그래프",
+     "같은 주·도시를 한 블록으로 묶고, 블록 안에서만 이웃을 최대 20개까지 잇는다. 이웃 선택은 무작위이되 실행할 때마다 동일한 결과가 나오도록 고정했다. 전국 기준 엣지 2,500만 개다."),
+    ("MODEL", "모델",
+     "GraphSAGE 2층, 은닉 64차원이며 이웃을 평균으로 요약한다. 학습할 때는 층마다 이웃 25개와 10개만 표집하지만, 예측할 때는 이웃 전체를 쓴다. 이 예측값이 공정성 지표와 지도의 색으로 이어지므로 표집에서 온 잡음을 남기지 않는다."),
+    ("LOSS", "손실",
+     "검거와 미제의 비율이 약 7 대 3이므로 미제 쪽에 가중을 준다. 여기에 집단 간 예측 평균이 벌어진 정도를 벌점으로 더하고, 학습을 멈추는 시점은 검증 성능으로 정한다."),
+]
+
+
+def build_arch():
+    """예측 단계를 INPUT/GRAPH/MODEL/LOSS 네 조각으로 펼친 절."""
+    svg = ARCH_SVG.format(
+        mut=MUTED, ink=INK, blk=ARCH_BLOCK, edg=ARCH_EDGE,
+        aria=T("사건을 노드로 두고 같은 주·도시끼리 블록으로 묶어 연결한 뒤, 각 "
+               "노드가 이웃의 평균을 요약해 검거 확률을 예측하는 과정을 나타낸 도해"),
+        t0=T("사건 하나가 노드", 700), t1=T("같은 주·도시끼리 블록", 700),
+        t2=T("이웃의 평균으로 예측", 700), t3=T("사건당 특성 123개"),
+        t4=T("이웃 최대 20개 · 엣지 2,500만"), t5=T("GraphSAGE 2층 · 집계 평균"),
+        t6=T("평균"), t7=T("검거 확률"))
+    st = '<div class="steps">' + "".join(
+        f'<div class="step"><span class="sn">{T(f"0{i+1}", 800)}</span>'
+        f'<span class="se">{T(en, 700)}</span><b>{T(ko, 700)}</b>'
+        f'<p>{T(d)}</p></div>'
+        for i, (en, ko, d) in enumerate(ARCH_STEPS)) + "</div>"
+    return section(
+        "03", "ARCHITECTURE",
+        "사건을 그래프로, 그래프를 예측으로",
+        "예측 단계의 구조는 세 부분이다. 사건 하나를 노드로 두고, 같은 지역에서 "
+        "발생한 사건끼리 이어 블록을 만들고, 각 노드가 이웃의 평균을 요약해 검거 "
+        "여부를 예측한다.",
+        f'<div class="arch">{svg}</div>'
+        + f'<p class="acap">{T("원과 사각형은 서로 다른 주·도시를 뜻한다. 블록이 "
+                               "다르면 이어지지 않으며, 뒤에서 인종 격차의 경로로 "
+                               "지목되는 것이 바로 이 구조다.")}</p>'
+        + st
+        + f'<p class="note">{T("출력은 확률이 아니라 순위 점수다. 미제 쪽에 가중을 "
+                               "주고 학습하므로 전체 수준이 밀려 있어, 지도 단계에서는 "
+                               "기댓값 총합이 실제와 맞도록 상수 하나를 더한 뒤 "
+                               "사용한다. 순서를 바꾸지 않는 보정이므로 순위는 "
+                               "그대로다.")}</p>')
+
+
+# ---------------------------------------------------------------------------
+# 본문. **절 하나를 (핵심 / 상세) 두 덩이로 나눠서 돌려준다.**
+#
+# ver2 페이지가 같은 문장과 같은 수치를 쓰되 상세만 접어 두기 때문이다. 문자열을
+# 양쪽에 복사하면 한쪽만 고쳐졌을 때 두 페이지가 서로 다른 숫자를 주장하게 되고,
+# 그건 이 저장소가 결과 CSV에서 이미 한 번 겪은 실패다(라벨이 설정 키를 빠뜨리면
+# 존재하지 않는 값이 만들어진다). 그래서 값은 여기 한 곳에만 둔다.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 본문 수치는 커밋된 결과 CSV에서 읽는다
+#
+# 계획서가 "검증 가능한 숫자는 CSV에서 읽는다"고 정해 두었는데, 진단·처방 절의
+# 사다리만 리터럴로 박혀 있었고 실제로 어긋났다. 세 가지가 한꺼번에 나왔다.
+#
+#   1. 벌점 사다리가 **라벨과 다른 양**을 그리고 있었다. 라벨은 "미제를 해결됨으로
+#      잘못 판정하는 비율의 인종 격차"(= FPR 증폭)인데, 0은 선택률 증폭(1.805,
+#      FPR은 1.893)이었고 25·50은 **주 단위 표준화** 값(0.639/0.701, 일괄은
+#      0.451/0.429)이었다. 네 칸 중 하나만 라벨과 같은 양이었다.
+#   2. 카운티 표준화 증폭비 0.662는 카운티 병합(Dade/Miami-Dade) **이전** 값이다.
+#      지금 CSV는 0.671이다.
+#   3. 신뢰구간 몇 개가 재산출 이전 값이었다(부트스트랩은 몬테카를로다).
+#
+# 셋 다 "그럴듯한데 틀린" 부류라 화면으로는 잡히지 않는다. 그래서 값을 지우고
+# 파일에서 읽는다. 행이 정확히 하나로 좁혀지지 않으면 **빌드를 멈춘다** --
+# 라벨이 설정 키를 빠뜨려 서로 다른 실험이 조용히 합쳐지는 것이 이 저장소가
+# 대시보드에서 이미 당한 실패다.
+# ---------------------------------------------------------------------------
+
+FAIR_MODEL = "graphsage_geo_blind_mb"      # 진단·처방 절의 기준 모델(전국, blind)
+FAIR_GROUPS = "named_n>=5000"              # 백인 대 흑인 대조가 서는 집단 하한
+COUNTY_FLOOR = 20                          # 카운티 표준화의 기준 층 하한
+_FAIR_CACHE = {}
+
+
+def fair(fname, attribute, metric="selection_rate", quantity="amplification",
+         model=FAIR_MODEL, min_stratum_n=None):
+    """fairness_*.csv 한 행에서 (값, 하한, 상한)."""
+    import pandas as pd
+
+    if fname not in _FAIR_CACHE:
+        p = C.scoped_output("") / fname
+        if not p.exists():
+            raise SystemExit(f"[에러] {p} 가 없다 -- 본문 수치를 읽을 수 없다.")
+        _FAIR_CACHE[fname] = pd.read_csv(p)
+    d = _FAIR_CACHE[fname]
+    m = ((d["attribute"] == attribute) & (d["model"] == model)
+         & (d["group_set"] == FAIR_GROUPS))
+    if min_stratum_n is not None:
+        m &= d["min_stratum_n"] == min_stratum_n
+    row = d[m]
+    if len(row) != 1:
+        raise SystemExit(f"[에러] {fname}: {attribute}/{model} 행이 {len(row)}개다 "
+                         f"-- 하나여야 한다(라벨이 설정 키를 빠뜨렸나).")
+    r = row.iloc[0]
+    c = f"{metric}_{quantity}"
+    return float(r[c]), float(r[c + "_lo"]), float(r[c + "_hi"])
+
+
+def contrast(fname, attribute, metric="selection_rate", quantity="amplification",
+             model_a=FAIR_MODEL, model_b="xgboost_blind"):
+    """fairness_model_contrasts*.csv 한 행에서 (차이, 하한, 상한).
+
+    모델 비교는 **반드시 이 표에서 읽는다.** 두 모델의 개별 신뢰구간이 겹치는지
+    보는 것은 같은 검정 집합을 공유하는 이 설계에서 무효이고, 실제로 겹치는데도
+    짝지은 차이가 0을 배제하는 사례가 이 데이터에 있다.
+    """
+    import pandas as pd
+
+    if fname not in _FAIR_CACHE:
+        p = C.scoped_output("") / fname
+        if not p.exists():
+            raise SystemExit(f"[에러] {p} 가 없다 -- 모델 대조를 읽을 수 없다.")
+        _FAIR_CACHE[fname] = pd.read_csv(p)
+    d = _FAIR_CACHE[fname]
+    row = d[(d["attribute"] == attribute) & (d["group_set"] == FAIR_GROUPS)
+            & (d["model_a"] == model_a) & (d["model_b"] == model_b)
+            & (d["metric"] == metric) & (d["quantity"] == quantity)]
+    if len(row) != 1:
+        raise SystemExit(f"[에러] {fname}: {model_a}-{model_b} 행이 {len(row)}개다.")
+    r = row.iloc[0]
+    return float(r["diff"]), float(r["diff_lo"]), float(r["diff_hi"])
+
+
+def rho(min_race_n=20):
+    """county_race_residual_summary.csv 한 행. 카운티 내부 인종 격차."""
+    import pandas as pd
+
+    p = C.scoped_output("") / "county_race_residual_summary.csv"
+    if not p.exists():
+        raise SystemExit(f"[에러] {p} 가 없다 -- 카운티 내부 격차를 읽을 수 없다.")
+    d = pd.read_csv(p)
+    row = d[(d["min_race_n"] == min_race_n) & (d["haldane"] == "on")]
+    if len(row) != 1:
+        raise SystemExit(f"[에러] rho 행이 {len(row)}개다 -- 하나여야 한다.")
+    return row.iloc[0]
+
+
+APPROACH_STEPS = [
+    ("PREDICT", "예측", "사건을 독립된 표본으로 다루는 대신, 같은 지역에서 발생한 "
+                        "사건들을 엣지로 이어 그래프로 재구성하고 검거 여부를 "
+                        "예측한다."),
+    ("DIAGNOSE", "진단", "그 예측이 피해자의 인종·성별에 따라 체계적으로 "
+                         "달라지는지를 공정성 지표로 측정한다. 두 속성은 서로 다른 "
+                         "답을 낸다."),
+    ("PRESCRIBE", "처방", "손실 함수에 집단 간 격차를 벌점으로 부과해 예측을 "
+                          "교정하고, 그 대가로 지불하는 정확도를 정량화한다."),
+    ("APPLY", "적용", "완화된 모델을 기준선으로 삼아, 사건 구성으로 설명되지 않는 "
+                      "미제가 집중된 지역을 식별한다."),
+]
+
+
+def problem_parts(stats):
+    n_rows, n_counties, n_assessed, n_cold, n_warm, corr = stats
     counters = [
         (f"{n_rows:,}", "기록된 살인사건", "1980-2014"),
         ("29.8%", "끝내 미제로 남음", "전국 평균"),
@@ -201,167 +369,235 @@ def build_body(stats):
         f'<div class="cnt"><b data-count="{v}">{T(v, 800)}</b>'
         f'<span>{T(lab, 700)}</span><i>{T(sub)}</i></div>'
         for v, lab, sub in counters) + "</div>"
-    h.append(section(
-        "01", "THE PROBLEM",
-        "검거율 70.2%, 그리고 남는 29.8%",
-        "미국에서는 매년 수만 건의 살인사건이 발생하지만, 그중 상당수는 끝내 범인을 "
-        "특정하지 못한 채 미제로 남는다. Murder Accountability Project가 집계한 "
-        "1980~2014년 데이터 638,454건 기준 검거율은 70.2%에 그치며, 나머지 29.8%는 "
-        "단 한 번도 해결되지 못했다. 이 숫자 뒤에는 단순한 수사 역량의 문제만이 아니라 "
-        "'어떤 사건이, 어떤 피해자가 더 쉽게 잊히는가'라는 구조적 질문이 놓여 있다.",
-        cnt
-        + f'<p class="lead2">{T("격차는 모델을 돌리기 전, 원자료 수준에서 이미 나타난다. "
-                                "피해자가 백인일 때 검거율은 <b>74.1%</b>인 반면 흑인일 "
-                                "때는 <b>66.3%</b>로 7.8%p의 차이가 있고, 여성 "
-                                "피해자(76.9%)와 남성 피해자(68.3%) 사이에도 8.6%p의 "
-                                "차이가 확인된다. 이는 통계적 잡음이 아니라 실증적으로 "
-                                "드러나는 구조적 격차이며, 이 프로젝트가 예측에서 멈추지 "
-                                "않는 이유이기도 하다.", 700)}</p>'))
+    return {
+        "label": "THE PROBLEM",
+        "title": "검거율 70.2%, 그리고 남는 29.8%",
+        "lead":
+            "미국에서는 매년 수만 건의 살인사건이 발생하지만, 그중 상당수는 끝내 범인을 "
+            "특정하지 못한 채 미제로 남는다. Murder Accountability Project가 집계한 "
+            "1980~2014년 데이터 638,454건 기준 검거율은 70.2%에 그치며, 나머지 29.8%는 "
+            "단 한 번도 해결되지 못했다. 이 숫자 뒤에는 단순한 수사 역량의 문제만이 아니라 "
+            "'어떤 사건이, 어떤 피해자가 더 쉽게 잊히는가'라는 구조적 질문이 놓여 있다.",
+        "core": cnt,
+        "detail":
+            f'<p class="lead2">{T("격차는 모델을 돌리기 전, 원자료 수준에서 이미 나타난다. "
+                                  "피해자가 백인일 때 검거율은 <b>74.1%</b>인 반면 흑인일 "
+                                  "때는 <b>66.3%</b>로 7.8%p의 차이가 있고, 여성 "
+                                  "피해자(76.9%)와 남성 피해자(68.3%) 사이에도 8.6%p의 "
+                                  "차이가 확인된다. 이는 통계적 잡음이 아니라 실증적으로 "
+                                  "드러나는 구조적 격차이며, 이 프로젝트가 예측에서 멈추지 "
+                                  "않는 이유이기도 하다.", 700)}</p>',
+    }
 
-    # --- S2 접근 ---------------------------------------------------------
-    steps = [
-        ("PREDICT", "예측", "사건을 독립된 표본으로 다루는 대신, 같은 지역에서 발생한 "
-                            "사건들을 엣지로 이어 그래프로 재구성하고 검거 여부를 "
-                            "예측한다."),
-        ("DIAGNOSE", "진단", "그 예측이 피해자의 인종·성별에 따라 체계적으로 "
-                             "달라지는지를 공정성 지표로 측정한다. 두 속성은 서로 다른 "
-                             "답을 낸다."),
-        ("PRESCRIBE", "처방", "손실 함수에 집단 간 격차를 벌점으로 부과해 예측을 "
-                              "교정하고, 그 대가로 지불하는 정확도를 정량화한다."),
-        ("APPLY", "적용", "완화된 모델을 기준선으로 삼아, 사건 구성으로 설명되지 않는 "
-                          "미제가 집중된 지역을 식별한다."),
-    ]
+
+def approach_parts():
     st = '<div class="steps">' + "".join(
         f'<div class="step"><span class="sn">{T(f"0{i+1}", 800)}</span>'
         f'<span class="se">{T(en, 700)}</span><b>{T(ko, 700)}</b>'
         f'<p>{T(d)}</p></div>'
-        for i, (en, ko, d) in enumerate(steps)) + "</div>"
-    h.append(section(
-        "02", "THE APPROACH",
-        "예측 · 진단 · 처방 · 적용의 네 단계",
-        "각 단계는 앞 단계가 답하지 못한 것 때문에 존재한다. 특히 처방 단계는 두 번의 "
-        "실패를 거친 뒤에야 작동하는 형태를 찾았으며, 실패한 두 시도가 오히려 격차의 "
-        "원인을 특정하는 근거가 되었다.", st))
+        for i, (en, ko, d) in enumerate(APPROACH_STEPS)) + "</div>"
+    return {
+        "label": "THE APPROACH",
+        "title": "예측 · 진단 · 처방 · 적용의 네 단계",
+        "lead":
+            "각 단계는 앞 단계가 답하지 못한 것 때문에 존재한다. 특히 처방 단계는 두 번의 "
+            "실패를 거친 뒤에야 작동하는 형태를 찾았으며, 실패한 두 시도가 오히려 격차의 "
+            "원인을 특정하는 근거가 되었다.",
+        "core": st,
+        "detail": "",
+    }
 
-    # --- S3 예측 ---------------------------------------------------------
-    mt = metric_table([
-        ("GraphSAGE (그래프 신경망)", [0.2854, 0.7117, 0.6513, 0.7957], True),
-        ("XGBoost (정형 모델)", [0.2744, 0.7033, 0.6456, 0.7915], False),
-        ("LogReg (선형 기준선)", [0.2330, 0.6726, 0.6248, 0.7834], False),
-    ])
+
+# 3개 주 표본, sighted. 열 순서는 MCC / AUC / Balanced Acc / Precision.
+# ver2의 핵심 결과 절이 이 표에서 마진을 **계산**한다 -- 같은 페이지에 표와 요약이
+# 함께 있으므로, 요약이 표와 다른 숫자를 말하면 그 자리에서 자기모순이 된다.
+PREDICT_ROWS = [
+    ("GraphSAGE (그래프 신경망)", [0.2854, 0.7117, 0.6513, 0.7957], True),
+    ("XGBoost (정형 모델)", [0.2744, 0.7033, 0.6456, 0.7915], False),
+    ("LogReg (선형 기준선)", [0.2330, 0.6726, 0.6248, 0.7834], False),
+]
+# 앞선 폭 ÷ 시드 간 표준편차. 주장 가능 여부가 여기서 갈린다.
+NOISE_RATIOS = [("MCC", 19.0, True), ("AUC", 14.6, True),
+                ("Balanced Acc", 6.6, True), ("Precision", 1.2, False),
+                ("Specificity", 0.7, False), ("F1", 0.0, False)]
+
+
+def predict_parts():
+    mt = metric_table(PREDICT_ROWS)
     noise = "".join(
         f'<div class="nrow"><span>{T(m, 700)}</span>'
         f'<span class="nbar"><i style="width:{min(100, r/19*100):.0f}%" '
         f'class="{"ok" if ok else "no"}"></i></span>'
         f'<span class="nval">{T(f"{r:.1f}배", 700)}</span>'
         f'<span class="ntag">{T("주장 가능" if ok else "우연 범위", 400)}</span></div>'
-        for m, r, ok in [("MCC", 19.0, True), ("AUC", 14.6, True),
-                         ("Balanced Acc", 6.6, True), ("Precision", 1.2, False),
-                         ("Specificity", 0.7, False), ("F1", 0.0, False)])
-    h.append(section(
-        "03", "PREDICT",
-        "관계 구조로 재해석한 예측, 그리고 주장 가능한 지표",
-        "사건을 낱개로 다루지 않고 같은 지역에서 발생한 사건들을 이어 붙인 뒤 검거 "
-        "여부를 예측했다. 관계 구조를 반영한 모델이 정형 모델을 앞선다. 다만 "
-        "'앞선다'를 어떤 지표로 주장할 수 있는지는 별도로 검증해야 한다.",
-        f'<p class="note">{T("네 지표 모두 예측 성능을 측정하지만 측정 방식이 다르므로 "
-                             "함께 본다. 모두 값이 클수록 좋다.")}</p>'
-        + mt
-        + f'<p class="lead2">{T("문제는 이 모델의 결과가 실행할 때마다 미세하게 "
-                                "흔들린다는 점이다. 따라서 앞선 폭 자체가 아니라, 그 폭이 "
-                                "실행 간 변동의 몇 배인지를 기준으로 삼아야 한다. 19배는 "
-                                "확실한 차이지만 1.2배는 우연으로도 발생할 수 있는 "
-                                "범위다.")}</p>'
-        + f'<p class="note">{T("앞선 폭 ÷ 실행 간 변동 폭")}</p>'
-        + f'<div class="noise">{noise}</div>'
-        + f'<p class="callout">{T("성능이 좋아 보이는 지표를 스스로 배제한 결과다. "
-                                  "Precision은 0.0042 앞섰고 이는 Balanced Accuracy의 "
-                                  "0.0057과 유사해 보이지만, Precision은 실행 간 변동 폭이 "
-                                  "5배 크기 때문에 이 정도 차이는 우연으로도 발생한다. "
-                                  "따라서 성능 주장에 <b>사용하지 않았다.</b>")}</p>'
-        + f'<p class="lead2">{T("관계 구조가 왜 도움이 되는지는 실패한 실험이 밝혀 "
-                                "주었다. 이웃을 무작위가 아니라 <b>가장 유사한 사건</b>으로 "
-                                "선택했더니 성능이 오히려 하락했다(0.0054 하락, 실행 간 "
-                                "변동의 9배). 이웃들의 평균이 자기 자신과 거의 일치하게 "
-                                "되어(유사도 0.64 → 0.95) 이웃으로부터 새로 얻을 정보가 "
-                                "사라진 탓이다.", 700)}</p>'
-        + f'<blockquote>{T("즉 그래프의 가치는 <b>유사한 사건을 찾는 데</b> 있지 않고 "
-                           "<b>주변 맥락을 요약하는 데</b> 있다. 같은 지역에서 무작위로 "
-                           "선택한 이웃 20건은 \'이 지역이 어떤 곳인가\'를 편향 없이 "
-                           "추정하게 해 준다.", 700)}</blockquote>'))
+        for m, r, ok in NOISE_RATIOS)
+    return {
+        "label": "PREDICT",
+        "title": "관계 구조로 재해석한 예측, 그리고 주장 가능한 지표",
+        "lead":
+            "사건을 낱개로 다루지 않고 같은 지역에서 발생한 사건들을 이어 붙인 뒤 검거 "
+            "여부를 예측했다. 관계 구조를 반영한 모델이 정형 모델을 앞선다. 다만 "
+            "'앞선다'를 어떤 지표로 주장할 수 있는지는 별도로 검증해야 한다.",
+        "core":
+            f'<p class="note">{T("네 지표 모두 예측 성능을 측정하지만 측정 방식이 다르므로 "
+                                 "함께 본다. 모두 값이 클수록 좋다.")}</p>'
+            + mt
+            + f'<p class="lead2">{T("문제는 이 모델의 결과가 실행할 때마다 미세하게 "
+                                    "흔들린다는 점이다. 따라서 앞선 폭 자체가 아니라, 그 폭이 "
+                                    "실행 간 변동의 몇 배인지를 기준으로 삼아야 한다. 19배는 "
+                                    "확실한 차이지만 1.2배는 우연으로도 발생할 수 있는 "
+                                    "범위다.")}</p>'
+            + f'<p class="note">{T("앞선 폭 ÷ 실행 간 변동 폭")}</p>'
+            + f'<div class="noise">{noise}</div>',
+        "detail":
+            f'<p class="callout">{T("성능이 좋아 보이는 지표를 스스로 배제한 결과다. "
+                                    "Precision은 0.0042 앞섰고 이는 Balanced Accuracy의 "
+                                    "0.0057과 유사해 보이지만, Precision은 실행 간 변동 폭이 "
+                                    "5배 크기 때문에 이 정도 차이는 우연으로도 발생한다. "
+                                    "따라서 성능 주장에 <b>사용하지 않았다.</b>")}</p>'
+            + f'<p class="lead2">{T("관계 구조가 왜 도움이 되는지는 실패한 실험이 밝혀 "
+                                    "주었다. 이웃을 무작위가 아니라 <b>가장 유사한 사건</b>으로 "
+                                    "선택했더니 성능이 오히려 하락했다(0.0054 하락, 실행 간 "
+                                    "변동의 9배). 이웃들의 평균이 자기 자신과 거의 일치하게 "
+                                    "되어(유사도 0.64 → 0.95) 이웃으로부터 새로 얻을 정보가 "
+                                    "사라진 탓이다.", 700)}</p>'
+            + f'<blockquote>{T("즉 그래프의 가치는 <b>유사한 사건을 찾는 데</b> 있지 않고 "
+                               "<b>주변 맥락을 요약하는 데</b> 있다. 같은 지역에서 무작위로 "
+                               "선택한 이웃 20건은 \'이 지역이 어떤 곳인가\'를 편향 없이 "
+                               "추정하게 해 준다.", 700)}</blockquote>',
+    }
 
-    # --- S4 진단 ---------------------------------------------------------
+
+def diagnose_parts():
+    r_pool = fair("fairness_gaps.csv", "Victim Race")
+    r_state = fair("fairness_gaps_standardized.csv", "Victim Race")
+    r_cty = fair("fairness_gaps_standardized_county.csv", "Victim Race",
+                 min_stratum_n=COUNTY_FLOOR)
+    s_pool = fair("fairness_gaps.csv", "Victim Sex")
+    s_state = fair("fairness_gaps_standardized.csv", "Victim Sex")
+    g_pool = fair("fairness_gaps.csv", "Victim Race", quantity="gap")
+    g_cty = fair("fairness_gaps_standardized_county.csv", "Victim Race",
+                 quantity="gap", min_stratum_n=COUNTY_FLOOR)
+    drop = (1 - g_cty[0] / g_pool[0]) * 100
+    rr = rho()
     ladder = (
         f'<div class="bars"><div class="bhead">'
         f'{T("인종에 따른 격차 (백인 대 흑인)", 700)}</div>'
-        + bar("전국 일괄", 1.805, 2.0, ci=(1.715, 1.904))
-        + bar("주 단위 표준화", 1.558, 2.0, ci=(1.457, 1.674))
-        + bar("카운티 단위 표준화", 0.662, 2.0, ci=(0.452, 0.888))
+        + bar("전국 일괄", r_pool[0], 2.0, ci=r_pool[1:])
+        + bar("주 단위 표준화", r_state[0], 2.0, ci=r_state[1:])
+        + bar("카운티 단위 표준화", r_cty[0], 2.0, ci=r_cty[1:])
         + f'<div class="bhead">{T("성별에 따른 격차", 700)}</div>'
-        + bar("전국 일괄", 1.246, 2.0)
-        + bar("주 단위 표준화", 1.005, 2.0, ci=(0.925, 1.090))
+        + bar("전국 일괄", s_pool[0], 2.0, ci=s_pool[1:])
+        + bar("주 단위 표준화", s_state[0], 2.0, ci=s_state[1:])
         + f'<p class="note">{T("1.0이 기준선이며, 데이터에 이미 존재하던 격차를 모델이 "
                                "몇 배로 확대하는지를 뜻한다. 표준화는 해당 단위 안에서 "
                                "각각 산출한 뒤 평균낸 값이다. 막대 위 가는 선은 값이 놓일 "
                                "수 있는 범위(95% 신뢰구간)이며, 그 범위가 1.0을 넘어설 "
                                "때만 붉게 표시했다.")}</p></div>'
     )
-    h.append(section(
-        "04", "DIAGNOSE",
-        "성별은 변수에서, 인종은 그래프에서",
-        "입력에서 인종·성별 변수를 제거해 보았다. 성별 격차는 2.55~3.29배에서 "
-        "0.88~0.96배로 무너진다. 변수를 지우면 격차도 함께 사라진 것이다. 인종은 "
-        "그렇지 않다.",
-        ladder
-        + f'<p class="lead2">{T("변수를 제거한 조건에서 그래프 모델은 <b>1.48배</b>, "
-                                "정형 모델은 0.67배를 기록했다. 두 모델을 짝지어 비교한 "
-                                "차이는 <b>+0.82 [+0.65, +1.03]</b>이다. 동일한 모델을 "
-                                "\'같은 지역\'이 아니라 \'같은 시기\'로 이어 붙인 그래프에 "
-                                "올리면 0.36배로 하락한다. 모델도 특성도 학습 절차도 "
-                                "동일하고 <b>연결 방식만</b> 다르므로, 남는 경로는 같은 "
-                                "지역끼리 이어진 연결뿐이다.", 700)}</p>'
-        + f'<p class="lead2">{T("카운티 단위로 표준화하면 0.662로 떨어진다. 이는 반증이 "
-                                "아니라 확증이다. 사건을 이어 붙일 때 사용한 기준이 곧 "
-                                "카운티이므로, 카운티를 고정하면 해당 경로가 통째로 "
-                                "제거되는 것이 당연하다. 모델이 확대한 인종 격차의 "
-                                "<b>88%가 카운티 간 차이</b>에서 비롯되었다는 "
-                                "의미다.", 700)}</p>'
-        + f'<blockquote>{T("다만 카운티 내부가 깨끗하다는 뜻은 아니다. 동일한 카운티 "
-                           "안에서도 흑인 피해자 사건은 기대 대비 <b>8.7% 더</b> 미제로 "
-                           "남는다(+0.083 [+0.056, +0.128]). 0이 아니다. 그러나 이 값과 "
-                           "해당 카운티의 흑인 비중 사이에는 <b>상관이 없다</b>(-0.015). "
-                           "카운티 내부의 격차는 지역에 관계없이 균일하게 존재하며, "
-                           "지도가 보여 주는 것은 카운티 간 차이다.", 700)}</blockquote>'))
+    return {
+        "label": "DIAGNOSE",
+        "title": "성별은 변수에서, 인종은 그래프에서",
+        "lead":
+            "입력에서 인종·성별 변수를 제거해 보았다. 성별 격차는 2.55~3.29배에서 "
+            "0.88~0.96배로 무너진다. 변수를 지우면 격차도 함께 사라진 것이다. 인종은 "
+            "그렇지 않다.",
+        "core":
+            ladder
+            + f'<p class="lead2">{T("변수를 제거한 조건에서 그래프 모델은 <b>1.48배</b>, "
+                                    "정형 모델은 0.67배를 기록했다. 두 모델을 짝지어 비교한 "
+                                    "차이는 <b>+0.82 [+0.65, +1.03]</b>이다. 동일한 모델을 "
+                                    "\'같은 지역\'이 아니라 \'같은 시기\'로 이어 붙인 그래프에 "
+                                    "올리면 0.36배로 하락한다. 모델도 특성도 학습 절차도 "
+                                    "동일하고 <b>연결 방식만</b> 다르므로, 남는 경로는 같은 "
+                                    "지역끼리 이어진 연결뿐이다. 이는 3개 주 표본의 값이며, "
+                                    "전국에서는 정형 모델도 증폭한다(다음 절 참조).", 700)}</p>',
+        "detail":
+            f'<p class="lead2">{T(f"카운티 단위로 표준화하면 {r_cty[0]:.3f}으로 떨어진다. "
+                                  f"이는 반증이 아니라 확증이다. 사건을 이어 붙일 때 사용한 "
+                                  f"기준이 곧 카운티이므로, 카운티를 고정하면 해당 경로가 "
+                                  f"통째로 제거되는 것이 당연하다. 모델이 확대한 인종 격차의 "
+                                  f"<b>{drop:.0f}%가 카운티 간 차이</b>에서 비롯되었다는 "
+                                  f"의미다.", 700)}</p>'
+            + f'<blockquote>{T(f"다만 카운티 내부가 깨끗하다는 뜻은 아니다. 동일한 카운티 "
+                               f"안에서도 흑인 피해자 사건은 기대 대비 "
+                               f"<b>{(pow(2.718281828, rr['rho_wmean'])-1)*100:.1f}% 더</b> "
+                               f"미제로 남는다(+{rr['rho_wmean']:.3f} "
+                               f"[+{rr['rho_wmean_lo']:.3f}, +{rr['rho_wmean_hi']:.3f}]). "
+                               f"0이 아니다. 그러나 이 값과 해당 카운티의 흑인 비중 "
+                               f"사이에는 <b>상관이 없다</b>"
+                               f"({rr['corr_rho_black_share']:+.3f}). 카운티 내부의 격차는 "
+                               f"지역에 관계없이 균일하게 존재하며, 지도가 보여 주는 것은 "
+                               f"카운티 간 차이다.", 700)}</blockquote>',
+    }
 
-    # --- S5 처방 ---------------------------------------------------------
+
+def prescribe_parts():
+    """벌점 사다리. **모두 같은 양(전국 일괄 FPR 증폭)이어야 한다** -- 라벨이 그렇게
+    적혀 있기 때문이다. 표준화 값과 섞으면 사다리가 두 축을 오간다."""
+    grid = [(0, "graphsage_fairloss_a0_mb"), (25, "graphsage_fairloss_a25_mb"),
+            (50, "graphsage_fairloss_a50_mb"), (100, "graphsage_fairloss_a100_mb")]
+    pooled = {a: fair("fairness_gaps.csv", "Victim Race", metric="fpr", model=m)
+              for a, m in grid}
+    state = {a: fair("fairness_gaps_standardized.csv", "Victim Race",
+                     metric="fpr", model=m) for a, m in grid}
     alpha = "".join(
         f'<div class="arow"><span>{T(f"벌점 {a}", 700)}</span>'
-        f'<span class="abar"><i class="{"red" if v > 1.0 else ""}" '
-        f'style="width:{min(100, v/1.9*100):.0f}%"></i></span>'
-        f'<span class="aval">{T(f"{v:.3f}", 700)}</span></div>'
-        for a, v in [(0, 1.805), (25, 0.639), (50, 0.701), (100, 0.261)])
-    h.append(section(
-        "05", "PRESCRIBE",
-        "손실 함수에 기록한 공정성 제약",
-        "입력에서 인종을 제거하는 대신, 모델이 그것을 사용하지 못하도록 제약한다. "
-        "학습 시 예측 오차를 알려 주는 손실에 '집단 간 예측이 벌어졌다'는 벌점을 함께 "
-        "부과하는 방식이다. 인종 정보는 학습 시점에만 필요하므로, 실제 운영 시점에는 "
-        "해당 속성을 몰라도 된다.",
-        f'<div class="bars">{alpha}'
-        f'<p class="note">{T("전국 기준, 미제 사건을 \'해결됨\'으로 잘못 판정하는 비율의 "
-                             "인종 격차다. 사전에 정한 통과 기준은 \'값이 놓일 수 있는 "
-                             "범위의 상한이 0.5 이하\'였고 벌점 100만 이를 통과했다"
-                             "(0.261 [0.157, 0.367]). 그 대가로 정확도 0.0156을 "
-                             "지불했다.")}</p></div>'
-        + f'<p class="callout">{T("다만 이 통과 기준은 <b>전국을 일괄 산출한</b> 값에 "
-                                  "근거한다. 주 단위로 표준화하면 0.590 [0.456, 0.738]이 "
-                                  "되어 어떤 벌점도 기준을 통과하지 못한다. 벌점 자체가 "
-                                  "일괄 격차를 기준으로 정의되어 있어 강도를 높인다고 "
-                                  "개선되지도 않는다(25/50/100에서 0.639/0.701/0.590). "
-                                  "이는 강도를 조절할 문제가 아니라 <b>주 단위로 벌점을 "
-                                  "층화</b>해야 한다는 뜻이며, 그 작업은 아직 수행하지 "
-                                  "않았다.", 700)}</p>'))
-    return "".join(h)
+        f'<span class="abar"><i class="{"red" if pooled[a][0] > 1.0 else ""}" '
+        f'style="width:{min(100, pooled[a][0]/1.9*100):.0f}%"></i></span>'
+        f'<span class="aval">{T(f"{pooled[a][0]:.3f}", 700)}</span></div>'
+        for a, _ in grid)
+    p100, s100 = pooled[100], state[100]
+    return {
+        "label": "PRESCRIBE",
+        "title": "손실 함수에 기록한 공정성 제약",
+        "lead":
+            "입력에서 인종을 제거하는 대신, 모델이 그것을 사용하지 못하도록 제약한다. "
+            "학습 시 예측 오차를 알려 주는 손실에 '집단 간 예측이 벌어졌다'는 벌점을 함께 "
+            "부과하는 방식이다. 인종 정보는 학습 시점에만 필요하므로, 실제 운영 시점에는 "
+            "해당 속성을 몰라도 된다.",
+        "core":
+            f'<div class="bars">{alpha}'
+            f'<p class="note">{T(f"전국을 일괄로 산출한, 미제 사건을 \'해결됨\'으로 잘못 "
+                                 f"판정하는 비율의 인종 격차다. 사전에 정한 통과 기준은 "
+                                 f"\'값이 놓일 수 있는 범위의 상한이 0.5 이하\'였고 벌점 "
+                                 f"100만 이를 통과했다({p100[0]:.3f} [{p100[1]:.3f}, "
+                                 f"{p100[2]:.3f}]). 25와 50은 값 자체는 0.5 아래지만 "
+                                 f"범위 상한이 {pooled[25][2]:.3f}·{pooled[50][2]:.3f}라 "
+                                 f"통과하지 못한다. 벌점 100의 대가로 정확도 0.0156을 "
+                                 f"지불했다.")}</p></div>',
+        "detail":
+            f'<p class="callout">{T(f"다만 이 통과 기준은 <b>전국을 일괄 산출한</b> 값에 "
+                                    f"근거한다. 주 단위로 표준화하면 {s100[0]:.3f} "
+                                    f"[{s100[1]:.3f}, {s100[2]:.3f}]이 되어 어떤 벌점도 "
+                                    f"기준을 통과하지 못한다. 벌점 자체가 일괄 격차를 "
+                                    f"기준으로 정의되어 있어 강도를 높인다고 개선되지도 "
+                                    f"않는다(25/50/100에서 {state[25][0]:.3f}/"
+                                    f"{state[50][0]:.3f}/{state[100][0]:.3f}). 이는 강도를 "
+                                    f"조절할 문제가 아니라 <b>주 단위로 벌점을 층화</b>해야 "
+                                    f"한다는 뜻이며, 그 작업은 아직 수행하지 않았다.", 700)}</p>',
+    }
+
+
+def render(num, parts, detail_wrap=None, sid=None):
+    """(핵심 + 상세)를 한 절로 조립한다. ver2는 detail_wrap으로 상세를 접는다."""
+    detail = parts["detail"]
+    if detail and detail_wrap is not None:
+        detail = detail_wrap(detail)
+    return section(num, parts["label"], parts["title"], parts["lead"],
+                   parts["core"] + detail, sid)
+
+
+def build_body(stats):
+    """페이지 본문(지도 섹션 제외)."""
+    return "".join([
+        render("01", problem_parts(stats)),
+        render("02", approach_parts()),
+        build_arch(),
+        render("04", predict_parts()),
+        render("05", diagnose_parts()),
+        render("06", prescribe_parts()),
+    ])
 
 
 # 이 지도는 오독되기 쉽고, 아래 문장들이 빠지면 "빨간 카운티 = 경찰이 일을 안 한다"로
@@ -519,6 +755,15 @@ blockquote{margin:28px 0 0;padding:22px 24px;border:1px solid __HAIR__;
   letter-spacing:.18em;margin:8px 0 2px}
 .step b{font-weight:700;font-size:18px}
 .step p{color:__INK2__;font-size:14px;margin:8px 0 0;line-height:1.65}
+/* architecture diagram -- 모노톤 평면. 채움·선·형태만 쓰고 그라데이션과 그림자는
+   쓰지 않는다. 색을 쓰지 않는 것은 취향이 아니라 이 페이지의 규칙이다. */
+.arch{margin:30px 0 0;border:1px solid __HAIR__;border-radius:12px;
+  background:#ffffff04;padding:24px 20px}
+.arch svg{display:block;width:100%;height:auto}
+.arch text{fill:__INK2__;font-size:13px}
+.arch text.hd{font-weight:700;fill:__INK__}
+.arch text.sm{font-size:11.5px;fill:__MUT__}
+.acap{color:__MUT__;font-size:12.5px;margin:14px 0 26px;max-width:70ch}
 /* metric table */
 table.mt{border-collapse:collapse;width:100%;font-size:14px;margin:6px 0 0}
 table.mt th,table.mt td{padding:11px 12px;border-bottom:1px solid __HAIR__;
@@ -653,12 +898,17 @@ footer{border-top:1px solid __HAIR__;padding:70px 0 90px}
 """
 
 
-def css():
-    return (CSS.replace("__BG2__", BG2).replace("__BG__", BG)
+def subst(text):
+    """CSS 토큰 치환. 팔레트는 한 곳에서만 정의된다 -- ver2 템플릿도 이걸 통과한다."""
+    return (text.replace("__BG2__", BG2).replace("__BG__", BG)
             .replace("__INK2__", INK2).replace("__INK__", INK)
             .replace("__MUT__", MUTED).replace("__HAIR__", HAIR)
             .replace("__ACC__", ACCENT).replace("__SURF__", CT.SURFACE)
             .replace("__FAM__", FP.FAMILY))
+
+
+def css():
+    return subst(CSS)
 
 
 JS = r"""
@@ -856,7 +1106,7 @@ def main():
 
     # 지도 섹션
     map_head = (
-        f'<div class="shead"><span class="snum">{T("06", 800)}</span>'
+        f'<div class="shead"><span class="snum">{T("07", 800)}</span>'
         f'<span class="slab">{T("APPLY", 800)}</span></div>'
         f'<h2>{T("설명되지 않는 미제의 지리적 집중", 800)}</h2>'
         f'<p class="lead">{T("이 프로젝트가 최종적으로 제시하는 것은 사건 목록이 "
@@ -985,7 +1235,8 @@ def main():
     check(html, palette, static, per, levels, fips_order, kb)
 
 
-def check(html, palette, static, per, levels, fips_order, kb):
+def check(html, palette, static, per, levels, fips_order, kb,
+          budget=SIZE_BUDGET_KB):
     """빌드 자체 검사. 조용히 틀린 페이지를 내보내지 않는다."""
     errs = []
     # 0) 인라인 JS 문법. 문법만 보므로 DOM 동작은 여전히 미검증이다(_htmlcheck 참조).
@@ -1037,15 +1288,15 @@ def check(html, palette, static, per, levels, fips_order, kb):
         if bad:
             errs.append(f"min_n={m}: 판정 상태 이상값 {set(bad)}")
     # 7) 용량
-    if kb > SIZE_BUDGET_KB:
-        errs.append(f"용량 {kb:.0f}KB > 예산 {SIZE_BUDGET_KB}KB")
+    if kb > budget:
+        errs.append(f"용량 {kb:.0f}KB > 예산 {budget}KB")
     if errs:
         print("[검사] 실패 " + str(len(errs)) + "건")
         for e in errs[:20]:
             print("  - " + e)
         raise SystemExit(1)
     print(f"[검사] 통과 (외부요청 0 · 빨강=z>0 · warm 무채색 "
-          f"· 용량 {kb:.0f}/{SIZE_BUDGET_KB}KB)")
+          f"· 용량 {kb:.0f}/{budget}KB)")
 
 
 if __name__ == "__main__":

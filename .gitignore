@@ -60,3 +60,5 @@ outputs/dashboard.html
 
 # DOM 검증용 개발 의존(jsdom). 산출물 빌드에는 필요 없다.
 node_modules/
+# 로컬 빌드 자산(재다운로드 가능). geo와 같은 이유로 커밋하지 않는다.
+dataset/fonts/
